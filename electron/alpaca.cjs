@@ -5,14 +5,16 @@ const path = require('node:path');
 
 const MAX_KEY_LENGTH = 4096;
 const MAX_BARS = 50_000;
+const ALPACA_LIVE_API = 'https://api.alpaca.markets';
+const ALPACA_PAPER_API = 'https://paper-api.alpaca.markets';
 const SUPPORTED_TIMEFRAMES = new Map([
-  ['1', { api: '1Min', minutes: 1 }],
-  ['5', { api: '5Min', minutes: 5 }],
-  ['15', { api: '15Min', minutes: 15 }],
-  ['30', { api: '30Min', minutes: 30 }],
-  ['60', { api: '1Hour', minutes: 60 }],
-  ['D', { api: '1Day', minutes: 1440 }],
-  ['1D', { api: '1Day', minutes: 1440 }],
+  ['1', { api: '1Min', minutes: 1, sourceMinutes: 1 }],
+  ['5', { api: '5Min', minutes: 5, sourceMinutes: 5 }],
+  ['15', { api: '15Min', minutes: 15, sourceMinutes: 15 }],
+  ['30', { api: '30Min', minutes: 30, sourceMinutes: 30 }],
+  ['60', { api: '1Hour', minutes: 60, sourceMinutes: 60 }],
+  ['D', { api: '1Day', minutes: 1440, sourceMinutes: 1440 }],
+  ['1D', { api: '1Day', minutes: 1440, sourceMinutes: 1440 }],
 ]);
 
 function requiredText(value, label) {
@@ -30,17 +32,42 @@ function validateTicker(value) {
 }
 
 function timeframe(value) {
-  const config = SUPPORTED_TIMEFRAMES.get(String(value).trim().toUpperCase());
-  if (!config) throw new Error(`Alpaca supports chart timeframes 1, 5, 15, 30, 60 minutes and D (daily); "${value}" is not supported.`);
-  return config;
+  const key = String(value).trim().toUpperCase();
+  const native = SUPPORTED_TIMEFRAMES.get(key);
+  if (native) return native;
+  const minutes = Number(key);
+  if (/^\d+$/.test(key) && Number.isSafeInteger(minutes) && minutes > 0 && minutes < 1440) {
+    const sourceMinutes = minutes > 60 && minutes % 60 === 0 ? 60 : 1;
+    return {
+      api: sourceMinutes === 60 ? '1Hour' : '1Min',
+      minutes,
+      sourceMinutes,
+    };
+  }
+  if (key === 'W' || key === '1W' || key === 'W1') {
+    return { api: '1Day', minutes: 10_080, sourceMinutes: 1440, period: 'week' };
+  }
+  if (key === 'M' || key === 'MN1' || key === '1MO') {
+    return { api: '1Day', minutes: 0, sourceMinutes: 1440, period: 'month' };
+  }
+  throw new Error(`Alpaca does not support chart timeframe "${value}".`);
 }
 
-function aggregateBars(bars, minutes) {
-  if (minutes === 1 || minutes === 1440) return bars;
-  const size = minutes * 60_000;
+function aggregateBars(bars, frame) {
+  if (!frame.period && frame.minutes === frame.sourceMinutes) return bars;
   const buckets = new Map();
   for (const bar of bars) {
-    const time = Math.floor(bar.time / size) * size;
+    let time;
+    if (frame.period === 'month') {
+      const date = new Date(bar.time);
+      time = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+    } else if (frame.period === 'week') {
+      const mondayOffset = 3 * 86_400_000;
+      time = Math.floor((bar.time + mondayOffset) / 604_800_000) * 604_800_000 - mondayOffset;
+    } else {
+      const size = frame.minutes * 60_000;
+      time = Math.floor(bar.time / size) * size;
+    }
     const current = buckets.get(time);
     if (!current) {
       buckets.set(time, { ...bar, time });
@@ -48,7 +75,7 @@ function aggregateBars(bars, minutes) {
       current.high = Math.max(current.high, bar.high);
       current.low = Math.min(current.low, bar.low);
       current.close = bar.close;
-      current.volume += bar.volume;
+      current.volume = (current.volume ?? 0) + (bar.volume ?? 0);
     }
   }
   return [...buckets.values()].sort((left, right) => left.time - right.time);
@@ -130,6 +157,18 @@ class AlpacaMarketData extends EventEmitter {
     const temporaryPath = `${this.storagePath}.tmp`;
     await fs.writeFile(temporaryPath, JSON.stringify(serialized), { mode: 0o600 });
     await fs.rename(temporaryPath, this.storagePath);
+  }
+
+  async saveBrokerCredentials(candidate = {}) {
+    const apiKey = requiredText(candidate.apiKey, 'API key ID');
+    const apiSecret = requiredText(candidate.apiSecret, 'secret key');
+    await this.writeCredentials({ keyId: apiKey, secretKey: apiSecret });
+    return { configured: true };
+  }
+
+  async readBrokerCredentials() {
+    const saved = await this.readSavedCredentials();
+    return saved ? { apiKey: saved.keyId, apiSecret: saved.secretKey } : null;
   }
 
   async status() {
@@ -237,6 +276,11 @@ class AlpacaMarketData extends EventEmitter {
     }
     if (from !== undefined && to !== undefined && from > to) throw new Error('Alpaca history range is reversed.');
 
+    const sourceBarsLimit = Math.min(MAX_BARS, limit * (frame.period === 'month'
+      ? 31
+      : frame.period === 'week'
+        ? 7
+        : Math.max(1, frame.minutes / frame.sourceMinutes)));
     const allBars = [];
     let pageToken;
     const seenPageTokens = new Set();
@@ -244,9 +288,9 @@ class AlpacaMarketData extends EventEmitter {
       const url = new URL(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(ticker)}/bars`);
       const params = new URLSearchParams({
         timeframe: frame.api,
-        limit: String(Math.min(limit, 10_000)),
+        limit: String(Math.min(sourceBarsLimit, 10_000)),
         feed: 'iex',
-        sort: 'asc',
+        sort: 'desc',
       });
       if (from !== undefined) params.set('start', new Date(from).toISOString());
       if (to !== undefined) params.set('end', new Date(to).toISOString());
@@ -260,8 +304,20 @@ class AlpacaMarketData extends EventEmitter {
         signal: AbortSignal.timeout(20_000),
       });
       const result = await this.readResponse(response, 'Alpaca market data');
-      if (!Array.isArray(result.bars)) throw new Error('Alpaca market data returned an invalid bars list.');
-      for (const item of result.bars) {
+      let bars = Array.isArray(result.bars) ? result.bars : null;
+      if (!bars && result.bars && typeof result.bars === 'object' && !Array.isArray(result.bars)) {
+        const entries = Object.entries(result.bars);
+        const symbolEntry = entries.find(([symbol]) => symbol.toUpperCase() === ticker);
+        if (symbolEntry) bars = symbolEntry[1];
+        else if (entries.length === 0) bars = [];
+        else if (entries.length === 1 && Array.isArray(entries[0][1])) bars = entries[0][1];
+      }
+      if (!Array.isArray(bars)) {
+        const responseKeys = Object.keys(result).filter(key => /^[a-z_]+$/i.test(key)).slice(0, 8).join(', ');
+        const barsType = result.bars === null ? 'null' : Array.isArray(result.bars) ? 'array' : typeof result.bars;
+        throw new Error(`Alpaca market data returned an invalid bars list for ${ticker} (bars: ${barsType}; response fields: ${responseKeys || 'none'}).`);
+      }
+      for (const item of bars) {
         const time = Date.parse(item.t);
         const values = [item.o, item.h, item.l, item.c, item.v].map(Number);
         if (!Number.isFinite(time) || values.some(value => !Number.isFinite(value))) continue;
@@ -276,17 +332,21 @@ class AlpacaMarketData extends EventEmitter {
       }
       if (nextPageToken) seenPageTokens.add(nextPageToken);
       pageToken = nextPageToken || undefined;
-    } while (pageToken && allBars.length < limit);
+    } while (pageToken && allBars.length < sourceBarsLimit);
 
     const sorted = allBars.sort((left, right) => left.time - right.time);
-    return sorted.length > limit ? sorted.slice(-limit) : sorted;
+    const aggregated = aggregateBars(sorted, frame);
+    return aggregated.length > limit ? aggregated.slice(-limit) : aggregated;
   }
 
   async assets() {
     if (!this.credentials || !this.authenticated) {
       throw new Error('Connect Alpaca in the Alpaca Feed panel first.');
     }
-    const url = new URL('https://paper-api.alpaca.markets/v2/assets');
+    const apiHost = this.credentials.keyId.trim().toUpperCase().startsWith('PK')
+      ? ALPACA_PAPER_API
+      : ALPACA_LIVE_API;
+    const url = new URL('/v2/assets', apiHost);
     url.search = new URLSearchParams({ status: 'active', asset_class: 'us_equity' }).toString();
     const response = await this.fetchImpl(url, {
       headers: {
@@ -380,7 +440,11 @@ class AlpacaMarketData extends EventEmitter {
     const ticker = validateTicker(tickerValue);
     const frame = timeframe(timeframeValue);
     const id = randomUUID();
-    this.subscriptions.set(id, { ticker, minutes: frame.minutes, frameKey: String(timeframeValue).toUpperCase() });
+    this.subscriptions.set(id, {
+      ticker,
+      ...frame,
+      frameKey: String(timeframeValue).toUpperCase(),
+    });
     this.minuteBuckets.delete(`${id}`);
     this.syncStreamSubscriptions();
     return id;
@@ -398,9 +462,9 @@ class AlpacaMarketData extends EventEmitter {
   syncStreamSubscriptions() {
     if (!this.authenticated || !this.socket) return;
     const next = {
-      bars: new Set([...this.subscriptions.values()].filter(item => item.minutes !== 1440).map(item => item.ticker)),
-      updatedBars: new Set([...this.subscriptions.values()].filter(item => item.minutes !== 1440).map(item => item.ticker)),
-      dailyBars: new Set([...this.subscriptions.values()].filter(item => item.minutes === 1440).map(item => item.ticker)),
+      bars: new Set([...this.subscriptions.values()].filter(item => !item.period && item.minutes < 1440).map(item => item.ticker)),
+      updatedBars: new Set([...this.subscriptions.values()].filter(item => !item.period && item.minutes < 1440).map(item => item.ticker)),
+      dailyBars: new Set([...this.subscriptions.values()].filter(item => item.period || item.minutes === 1440).map(item => item.ticker)),
     };
     const additions = {};
     const removals = {};
@@ -449,7 +513,7 @@ class AlpacaMarketData extends EventEmitter {
       const minuteBar = { time, open: values[0], high: values[1], low: values[2], close: values[3], volume: values[4] };
       for (const [id, subscription] of this.subscriptions) {
         if (subscription.ticker !== message.S) continue;
-        if (subscription.minutes === 1440) {
+        if (subscription.minutes === 1440 && !subscription.period) {
           if (message.T !== 'd') continue;
           this.emit('bar', {
             subscriptionId: id,
@@ -459,10 +523,15 @@ class AlpacaMarketData extends EventEmitter {
           });
           continue;
         }
-        if (message.T === 'd') continue;
-        const bucketSize = subscription.minutes * 60_000;
+        if (subscription.period) {
+          if (message.T !== 'd') continue;
+        } else if (message.T === 'd') continue;
         const bucketOffset = subscription.minutes === 60 ? 30 * 60_000 : 0;
-        const bucketTime = Math.floor((time - bucketOffset) / bucketSize) * bucketSize + bucketOffset;
+        const bucketTime = subscription.period === 'month'
+          ? Date.UTC(new Date(time).getUTCFullYear(), new Date(time).getUTCMonth(), 1)
+          : subscription.period === 'week'
+            ? Math.floor((time + 3 * 86_400_000) / 604_800_000) * 604_800_000 - 3 * 86_400_000
+            : Math.floor((time - bucketOffset) / (subscription.minutes * 60_000)) * (subscription.minutes * 60_000) + bucketOffset;
         let current = this.minuteBuckets.get(id);
         if (!current || current.time !== bucketTime) {
           if (current && bucketTime < current.time) continue;
@@ -470,15 +539,9 @@ class AlpacaMarketData extends EventEmitter {
           this.minuteBuckets.set(id, current);
         }
         current.minutes.set(minuteBar.time, minuteBar);
-        const componentBars = [...current.minutes.values()].sort((left, right) => left.time - right.time);
-        const aggregate = {
-          time: bucketTime,
-          open: componentBars[0].open,
-          high: Math.max(...componentBars.map(bar => bar.high)),
-          low: Math.min(...componentBars.map(bar => bar.low)),
-          close: componentBars[componentBars.length - 1].close,
-          volume: componentBars.reduce((total, bar) => total + bar.volume, 0),
-        };
+        const aggregates = aggregateBars([...current.minutes.values()], subscription);
+        const aggregate = aggregates[aggregates.length - 1];
+        if (!aggregate) continue;
         this.emit('bar', {
           subscriptionId: id,
           ticker: subscription.ticker,

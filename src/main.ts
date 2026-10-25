@@ -42,6 +42,33 @@ import { initializeVisualBacktest } from './visualBacktest';
 const startupScreen = document.getElementById('omega-startup-screen');
 const startupStatus = document.getElementById('omega-startup-status');
 
+type DiagnosticEntry = {
+  time: string;
+  source?: string;
+  type?: string;
+  name?: string;
+  target?: string;
+  status?: string;
+  message?: string;
+  durationMs?: number;
+};
+
+declare global {
+  interface Window {
+    velaDiagnostics?: {
+      openConsole(): Promise<boolean>;
+      getRecent(): Promise<{ entries: DiagnosticEntry[]; file: string }>;
+      onEntry(callback: (entry: DiagnosticEntry) => void): () => void;
+    };
+  }
+}
+
+document.getElementById('diagnostics-console-toggle')?.addEventListener('click', () => {
+  void window.velaDiagnostics?.openConsole().catch(error => {
+    console.error('Could not open the diagnostic console:', error);
+  });
+});
+
 function setStartupStatus(message: string, state?: 'error'): void {
   if (startupStatus) {
     startupStatus.textContent = message;
@@ -168,42 +195,6 @@ if ('__TAURI_INTERNALS__' in window) {
     },
   };
 
-  type AlpacaBridgeApi = NonNullable<Window['velaAlpaca']>;
-  const alpacaBars = new Set<Parameters<AlpacaBridgeApi['onBar']>[0]>();
-  const alpacaStatuses = new Set<Parameters<AlpacaBridgeApi['onStatus']>[0]>();
-  const alpacaEventsReady = Promise.all([
-    listen<Parameters<AlpacaBridgeApi['onBar']>[0] extends (bar: infer Bar) => void ? Bar : never>('alpaca:bar', event => {
-      for (const callback of alpacaBars) callback(event.payload);
-    }),
-    listen<Parameters<AlpacaBridgeApi['onStatus']>[0] extends (state: infer State) => void ? State : never>('alpaca:status', event => {
-      for (const callback of alpacaStatuses) callback(event.payload);
-    }),
-  ]).catch(error => {
-    console.error('Could not initialize Alpaca market-data events:', error);
-    throw error;
-  });
-  window.velaAlpaca = {
-    connect: credentials => invoke<Awaited<ReturnType<AlpacaBridgeApi['connect']>>>('alpaca_connect', {
-      keyId: credentials?.keyId ?? '',
-      secretKey: credentials?.secretKey ?? '',
-    }).then(async result => {
-      await alpacaEventsReady;
-      return result;
-    }),
-    status: () => invoke<Awaited<ReturnType<AlpacaBridgeApi['status']>>>('alpaca_status'),
-    bars: request => invoke<Awaited<ReturnType<AlpacaBridgeApi['bars']>>>('alpaca_bars', request),
-    subscribe: (ticker, timeframe) => invoke<Awaited<ReturnType<AlpacaBridgeApi['subscribe']>>>('alpaca_subscribe', { ticker, timeframe }),
-    unsubscribe: subscriptionId => invoke<Awaited<ReturnType<AlpacaBridgeApi['unsubscribe']>>>('alpaca_unsubscribe', { subscriptionId }),
-    disconnect: () => invoke<Awaited<ReturnType<AlpacaBridgeApi['disconnect']>>>('alpaca_disconnect'),
-    onBar: callback => {
-      alpacaBars.add(callback);
-      return () => alpacaBars.delete(callback);
-    },
-    onStatus: callback => {
-      alpacaStatuses.add(callback);
-      return () => alpacaStatuses.delete(callback);
-    },
-  };
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
   const editorWindowLabel = 'omega-pine-editor-window';
   const editorEvents = {
@@ -310,7 +301,7 @@ function loadStartupModule<T>(id: OptionalModuleId, loader: () => Promise<T>): P
 const [
   brokerModule,
   mt5FeedModule,
-  alpacaFeedModule,
+  alpacaSdkFeedModule,
   pineEditorModule,
   pineTsModule,
   indicatorBrowserModule,
@@ -331,14 +322,66 @@ function hideFeatureElements(enabled: boolean, ...ids: string[]) {
 
 hideFeatureElements(brokerModule.enabled, 'broker-toggle', 'broker-modal');
 hideFeatureElements(mt5FeedModule.enabled, 'mt5-feed-toggle', 'mt5-feed-modal');
-hideFeatureElements(alpacaFeedModule.enabled, 'alpaca-feed-toggle', 'alpaca-feed-modal');
-hideFeatureElements(mt5FeedModule.enabled || alpacaFeedModule.enabled, 'local-feeds-toggle', 'local-feeds-modal');
+hideFeatureElements(mt5FeedModule.enabled, 'local-feeds-toggle', 'local-feeds-modal');
 hideFeatureElements(backtestModule.enabled, 'backtest-toggle');
 hideFeatureElements(pineEditorModule.enabled, 'editor-toggle-btn', 'editor-drawer', 'resize-handle');
 hideFeatureElements(updateCheckerModule.enabled, 'check-updates');
 const connectionLatency = document.getElementById('connection-latency');
 const tradingAccountMode = document.getElementById('trading-account-mode');
 const tradingAccountDetail = document.getElementById('trading-account-detail');
+const tradingAccountSelect = document.getElementById('trading-account-select') as HTMLSelectElement | null;
+type TradingAccountChoice = { id: string; label: string; mode: string; detail: string };
+const LOCAL_DEMO_ACCOUNT: TradingAccountChoice = {
+  id: 'local-demo', label: 'DEMO · Local account', mode: 'DEMO', detail: 'Local account',
+};
+const availableTradingAccounts = new Map<string, TradingAccountChoice>([[LOCAL_DEMO_ACCOUNT.id, LOCAL_DEMO_ACCOUNT]]);
+const TRADING_ACCOUNT_STORAGE_KEY = 'omega.selected-trading-account';
+function selectTradingAccount(id: string, persist = true) {
+  const account = availableTradingAccounts.get(id) ?? LOCAL_DEMO_ACCOUNT;
+  if (tradingAccountSelect) tradingAccountSelect.value = account.id;
+  if (tradingAccountMode) tradingAccountMode.textContent = account.mode;
+  if (tradingAccountDetail) tradingAccountDetail.textContent = account.detail;
+  if (persist) localStorage.setItem(TRADING_ACCOUNT_STORAGE_KEY, account.id);
+  document.dispatchEvent(new CustomEvent('omega:trading-account-selected', {
+    detail: {
+      id: account.id,
+      provider: account.id.includes(':') ? account.id.slice(0, account.id.indexOf(':')).toLowerCase() : '',
+    },
+  }));
+}
+function renderTradingAccounts() {
+  if (!tradingAccountSelect) return;
+  const selected = localStorage.getItem(TRADING_ACCOUNT_STORAGE_KEY) || LOCAL_DEMO_ACCOUNT.id;
+  tradingAccountSelect.replaceChildren(...[...availableTradingAccounts.values()].map(account => {
+    const option = document.createElement('option');
+    option.value = account.id;
+    option.textContent = account.label;
+    return option;
+  }));
+  selectTradingAccount(availableTradingAccounts.has(selected) ? selected : LOCAL_DEMO_ACCOUNT.id, false);
+}
+tradingAccountSelect?.addEventListener('change', () => selectTradingAccount(tradingAccountSelect.value));
+document.addEventListener('omega:trading-account-available', event => {
+  const account = (event as CustomEvent<TradingAccountChoice>).detail;
+  if (!account?.id || !account.label || !account.mode || !account.detail) return;
+  availableTradingAccounts.set(account.id, account);
+  renderTradingAccounts();
+});
+document.addEventListener('omega:trading-account-unavailable', event => {
+  const id = (event as CustomEvent<string>).detail;
+  if (!id || id === LOCAL_DEMO_ACCOUNT.id) return;
+  availableTradingAccounts.delete(id);
+  renderTradingAccounts();
+});
+document.addEventListener('omega:trading-broker-disconnected', event => {
+  const brokerId = (event as CustomEvent<string>).detail;
+  if (!brokerId) return;
+  for (const id of availableTradingAccounts.keys()) {
+    if (id.startsWith(`${brokerId}:`)) availableTradingAccounts.delete(id);
+  }
+  renderTradingAccounts();
+});
+renderTradingAccounts();
 document.addEventListener('omega:connection-latency', (event) => {
   const milliseconds = (event as CustomEvent<number>).detail;
   if (!connectionLatency || !Number.isFinite(milliseconds)) return;
@@ -358,7 +401,7 @@ let currentScriptName = requestedPineScript && scripts[requestedPineScript]
   ? requestedPineScript
   : Object.keys(scripts)[0] || 'Dual EMA Cross';
 const savedTheme = localStorage.getItem('vela_theme');
-type OmegaTheme = 'dark' | 'light' | 'high-contrast';
+type OmegaTheme = 'dark' | 'light' | 'high-contrast' | 'high-contrast-dark';
 const HIGH_CONTRAST_THEME: VelaTheme = {
   background: '#f7fbff',
   textColor: '#061a33',
@@ -368,7 +411,22 @@ const HIGH_CONTRAST_THEME: VelaTheme = {
   downColor: '#b00020',
   fontFamily: 'Arial, sans-serif',
 };
-let currentTheme: OmegaTheme = savedTheme === 'light' || savedTheme === 'high-contrast' ? savedTheme : 'dark';
+const HIGH_CONTRAST_DARK_THEME: VelaTheme = {
+  background: '#101d30',
+  textColor: '#f5f9ff',
+  gridColor: '#506d91',
+  borderColor: '#9bbde5',
+  upColor: '#00c98d',
+  downColor: '#ff6473',
+  fontFamily: 'Arial, sans-serif',
+};
+const isOmegaTheme = (theme: unknown): theme is OmegaTheme =>
+  theme === 'dark' || theme === 'light' || theme === 'high-contrast' || theme === 'high-contrast-dark';
+const velaTheme = (theme: OmegaTheme): VelaTheme | 'dark' | 'light' =>
+  theme === 'high-contrast' ? HIGH_CONTRAST_THEME
+    : theme === 'high-contrast-dark' ? HIGH_CONTRAST_DARK_THEME
+      : theme;
+let currentTheme: OmegaTheme = isOmegaTheme(savedTheme) ? savedTheme : 'dark';
 let workspace: VelaWorkspace;
 let workspaceInitialized = false;
 let barThickness = Math.max(0.15, Math.min(1, Number(localStorage.getItem('vela_bar_thickness') ?? 1)));
@@ -618,12 +676,12 @@ registerStatePersistence({
   restore: payload => {
     if (!payload || typeof payload !== 'object') return;
     const preferences = payload as Record<string, unknown>;
-    if (preferences.theme === 'dark' || preferences.theme === 'light' || preferences.theme === 'high-contrast') {
+    if (isOmegaTheme(preferences.theme)) {
       currentTheme = preferences.theme;
       localStorage.setItem('vela_theme', currentTheme);
       if (workspaceInitialized) {
-        workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
-        setPineEditorTheme?.(currentTheme === 'dark' ? 'dark' : 'light');
+        workspace.setTheme(velaTheme(currentTheme));
+        setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
         updateThemeUI(currentTheme);
       }
     }
@@ -800,9 +858,9 @@ function registerChartSettings(chart: VelaWorkspace['chart']) {
         {
           kind: 'select',
           label: 'Platform theme',
-          options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast (blue)']],
+          options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast — light blue'], ['high-contrast-dark', 'High contrast — dark blue']],
           get: () => currentTheme,
-          set: (theme: string) => setTheme(theme === 'high-contrast' ? 'high-contrast' : theme === 'light' ? 'light' : 'dark'),
+          set: (theme: string) => setTheme(isOmegaTheme(theme) ? theme : 'dark'),
         },
         {
           kind: 'color',
@@ -938,7 +996,7 @@ document.getElementById('chart')!.append(chartGridHost);
 setStartupStatus('Building your trading workspace…');
 try {
   workspace = await bootWithOptionalModules([optionalModuleLoads], () => new VelaWorkspace(chartGridHost, {
-    layout: initialWorkspaceLayout, symbol: 'BTCUSDT', timeframe: '60', live: true, volume: false, theme: currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme, persist: 'vela-workspace', storage: workspaceStorage,
+    layout: initialWorkspaceLayout, symbol: 'BTCUSDT', timeframe: '60', live: true, volume: false, theme: velaTheme(currentTheme), persist: 'vela-workspace', storage: workspaceStorage,
     cells: restoredWorkspaceState?.charts?.length ? Object.fromEntries(restoredWorkspaceState.charts.map((chart: { id: string; symbol?: string; timeframe?: string }) => [chart.id, { symbol: chart.symbol, timeframe: chart.timeframe }])) : (window.velaWorkspaceFiles ? { primary: { symbol: 'BTCUSDT', timeframe: '60' } } : undefined),
     sync: restoredWorkspaceState?.sync,
     topbar: { left: ['symbol', 'indicators', 'omega-favorite-drawing-tools'] },
@@ -955,10 +1013,10 @@ try {
   throw err;
 }
 workspaceInitialized = true;
-workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
+workspace.setTheme(velaTheme(currentTheme));
 
 mt5FeedModule.value?.initializeMt5Feed(() => workspace);
-alpacaFeedModule.value?.initializeAlpacaFeed(() => workspace);
+alpacaSdkFeedModule.value?.initializeAlpacaSdkFeed(() => workspace);
 initializeCTraderFeed(() => workspace);
 
 const localFeedsModal = document.getElementById('local-feeds-modal');
@@ -977,9 +1035,8 @@ localFeedsModal?.addEventListener('click', event => {
   if (event.target === localFeedsModal) closeLocalFeeds();
 });
 document.querySelectorAll<HTMLButtonElement>('[data-local-feed]').forEach(button => {
-  const feedId = button.dataset.localFeed === 'mt5' ? 'mt5-feed-toggle' : 'alpaca-feed-toggle';
-  const trigger = document.getElementById(feedId) as HTMLButtonElement | null;
-  const enabled = button.dataset.localFeed === 'mt5' ? mt5FeedModule.enabled : alpacaFeedModule.enabled;
+  const trigger = document.getElementById('mt5-feed-toggle') as HTMLButtonElement | null;
+  const enabled = mt5FeedModule.enabled;
   if (!trigger || !enabled) button.hidden = true;
   button.addEventListener('click', () => {
     trigger?.click();
@@ -1953,6 +2010,7 @@ const loadedBarListeners = new Map<string, Array<() => void>>();
 const loadedBarCounts = new Map<string, { loaded: number; target: number }>();
 const loadedBarsLabel = document.getElementById('bottom-loaded-bars');
 const barCountFormatter = new Intl.NumberFormat();
+const maxAutomaticHistoryBars = 50_000;
 
 function renderLoadedBarCount(): void {
   if (!loadedBarsLabel) return;
@@ -1987,11 +2045,46 @@ function watchCellLoadedBars(cellId: string): void {
   const cell = workspace.cell(cellId);
   if (!cell) return;
   const target = Math.max(0, Number(cell.chart.market.bars) || 0);
+  let extendingHistory = false;
+  let lastExtensionBoundary = '';
+  let currentViewport: { from: number; to: number } | null = null;
+  const maybeExtendHistory = (range: { from: number; to: number }) => {
+    const market = cell.chart.market;
+    const oldest = cell.chart.replay.bounds?.first;
+    if (market.offline || !market.symbol || !market.timeframe || oldest === undefined || extendingHistory) return;
+    const interval = timeframeToMs(market.timeframe);
+    const visibleWidth = Math.max(0, range.to - range.from);
+    const preloadMargin = Math.max(interval * 5, visibleWidth * 0.15);
+    if (range.from > oldest + preloadMargin) return;
+    const boundary = `${market.symbol}|${market.timeframe}|${oldest}`;
+    if (boundary === lastExtensionBoundary) return;
+    const loaded = loadedBarCounts.get(cellId)?.loaded ?? 0;
+    const requested = Math.max(1, Number(market.bars) || 500);
+    const nextTarget = Math.min(maxAutomaticHistoryBars, Math.max(requested + 500, loaded + 500));
+    if (nextTarget <= requested) return;
+    lastExtensionBoundary = boundary;
+    extendingHistory = true;
+    setLoadedBarCount(cellId, loaded, nextTarget);
+    void cell.chart.setMarket({ bars: nextTarget })
+      .then(() => cell.chart.historyComplete())
+      .catch(error => {
+        console.error(`Could not load older chart history for ${market.symbol}:`, error);
+      })
+      .finally(() => {
+        extendingHistory = false;
+        if (currentViewport) maybeExtendHistory(currentViewport);
+      });
+  };
   setLoadedBarCount(cellId, 0, target);
   loadedBarListeners.set(cellId, [
     cell.chart.on('load:end', event => setLoadedBarCount(cellId, event.bars, Number(cell.chart.market.bars) || event.bars)),
     cell.chart.on('history:progress', event => setLoadedBarCount(cellId, event.loaded, event.target)),
     cell.chart.on('history:complete', event => setLoadedBarCount(cellId, event.barsLoaded, Number(cell.chart.market.bars) || event.barsLoaded)),
+    cell.chart.on('market:changed', () => { lastExtensionBoundary = ''; }),
+    cell.chart.on('viewport:changed', range => {
+      currentViewport = range;
+      maybeExtendHistory(range);
+    }),
   ]);
 }
 
@@ -2209,6 +2302,17 @@ const cellControlsManager = new ChartCellControlsManager({
   getGroupForCell: (cellId: string) => groupByCellId[cellId] ?? '',
   onSetCellGroup: (cellId: string, group: string) => setCellGroup(cellId, group),
 });
+chartGridHost.addEventListener('click', event => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const symbolButton = target.closest<HTMLElement>('.vela-widget-symbol, .vela-mb-symbol');
+  if (!symbolButton) return;
+  const activeCell = workspace.active;
+  if (!activeCell) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  cellControlsManager.openSymbolPickerForCell(activeCell.id, symbolButton);
+}, true);
 
 function keyboardTargetAcceptsText(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -2640,11 +2744,11 @@ const themeMenu = document.getElementById('theme-menu') as HTMLDetailsElement;
 const themeChoices = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]'));
 
 function updateThemeUI(theme: OmegaTheme) {
-  const baseTheme = theme === 'high-contrast' ? 'light' : theme;
+  const baseTheme = theme === 'high-contrast' ? 'light' : theme === 'high-contrast-dark' ? 'dark' : theme;
   document.documentElement.dataset.theme = baseTheme;
   document.body.dataset.theme = baseTheme;
-  document.documentElement.dataset.themeVariant = theme === 'high-contrast' ? 'high-contrast' : '';
-  document.body.dataset.themeVariant = theme === 'high-contrast' ? 'high-contrast' : '';
+  document.documentElement.dataset.themeVariant = theme.startsWith('high-contrast') ? theme : '';
+  document.body.dataset.themeVariant = theme.startsWith('high-contrast') ? theme : '';
   document.documentElement.style.colorScheme = baseTheme;
   themeMenu.dataset.active = 'true';
   for (const choice of themeChoices) {
@@ -2662,12 +2766,12 @@ function setTheme(theme: OmegaTheme) {
   updateThemeUI(currentTheme);
   refreshMarketFlowStyles();
   try {
-    workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
+    workspace.setTheme(velaTheme(currentTheme));
   } catch (error) {
     console.error('Could not apply the selected theme to the chart workspace:', error);
   }
   try {
-    setPineEditorTheme?.(currentTheme === 'dark' ? 'dark' : 'light');
+    setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
   } catch (error) {
     console.error('Could not apply the selected theme to the Pine editor:', error);
   }
@@ -2684,7 +2788,7 @@ function selectThemeFromMenu(event: Event) {
   event.preventDefault();
   event.stopPropagation();
   const themeChoice = choice.dataset.themeChoice;
-  const theme: OmegaTheme = themeChoice === 'high-contrast' ? 'high-contrast' : themeChoice === 'light' ? 'light' : 'dark';
+  const theme: OmegaTheme = isOmegaTheme(themeChoice) ? themeChoice : 'dark';
   setTheme(theme);
   themeMenu.open = false;
 }
@@ -2754,10 +2858,27 @@ document.getElementById('top-chart-settings')!.addEventListener('click', event =
 // Keep the chart's right-click menu useful for the actions traders reach for
 // while working on the plot. These actions deliberately reuse the same paths as
 // the toolbar and Settings, so there is one source of truth for each command.
+const contextActionIcons: Record<string, string> = {
+  'omega-context-cancel-order': '<path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="m17 3 4 4m0-4-4 4"/>',
+  'omega-context-add-order': '<path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="M19 14v7m-3.5-3.5h7"/>',
+  'omega-context-volume': '<path d="M3 10v4h4l5 4V6l-5 4z"/><path d="M16 9a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12"/>',
+  'omega-context-bid-ask': '<path d="M3 7h18M3 17h18"/><path d="m7 4-4 3 4 3m10 4 4 3-4 3"/>',
+  'omega-context-reset-view': '<path d="M4 11a8 8 0 1 1 2 6"/><path d="M4 4v7h7"/><path d="M12 7v5l3 2"/>',
+  'omega-context-background': '<path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-3.7 2 2 0 0 1 1-3.8h2a3 3 0 0 0 3-3c0-4.1-4-7.5-9-7.5z"/><path d="M7.5 10h.01M11 7h.01M15.5 8.5h.01"/>',
+  'omega-context-theme-light': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>',
+  'omega-context-theme-dark': '<path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2z"/>',
+  'omega-context-pine': '<path d="m8 5-6 7 6 7m8-14 6 7-6 7m-2-15-4 16"/>',
+  'omega-context-replay': '<path d="M4 5v6h6"/><path d="M5.5 15a7 7 0 1 0 1-7"/><path d="m10 8 6 4-6 4z"/>',
+  'omega-context-replay-panel': '<path d="M3 4h18v16H3z"/><path d="M3 9h18m-6-5v5"/><path d="m8 12 5 3-5 3z"/>',
+};
+for (const [id, pathData] of Object.entries(contextActionIcons)) {
+  registerIcon(id, `<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${pathData}</svg>`);
+}
 registerWidgetAction({
   id: 'omega-context-cancel-pending-paper-order',
   target: 'context:body',
   label: 'Cancel pending paper order',
+  icon: 'omega-context-cancel-order',
   order: -21,
   when: context => context.pointer?.paneKind === 'price'
     && Number.isFinite(context.pointer.price)
@@ -2772,6 +2893,7 @@ registerWidgetAction({
   id: 'omega-context-add-pending-paper-order',
   target: 'context:body',
   label: 'Add pending paper order…',
+  icon: 'omega-context-add-order',
   order: -20,
   when: context => context.pointer?.paneKind === 'price'
     && Number.isFinite(context.pointer.price)
@@ -2784,6 +2906,7 @@ registerWidgetAction({
   id: 'omega-context-show-real-volumes',
   target: 'context:body',
   label: 'Show real volumes',
+  icon: 'omega-context-volume',
   order: -28,
   when: context => !context.chart.presentNativeIndicators().includes('volume'),
   run: context => {
@@ -2794,6 +2917,7 @@ registerWidgetAction({
   id: 'omega-context-hide-real-volumes',
   target: 'context:body',
   label: 'Hide real volumes',
+  icon: 'omega-context-volume',
   order: -28,
   when: context => context.chart.presentNativeIndicators().includes('volume'),
   run: context => {
@@ -2809,6 +2933,7 @@ registerWidgetAction({
   id: 'omega-context-show-bid-ask-lines',
   target: 'context:body',
   label: 'Show bid/ask lines',
+  icon: 'omega-context-bid-ask',
   order: -27,
   when: () => !showBidAskLines,
   run: () => {
@@ -2822,6 +2947,7 @@ registerWidgetAction({
   id: 'omega-context-hide-bid-ask-lines',
   target: 'context:body',
   label: 'Hide bid/ask lines',
+  icon: 'omega-context-bid-ask',
   order: -27,
   when: () => showBidAskLines,
   run: () => {
@@ -2835,6 +2961,7 @@ registerWidgetAction({
   id: 'omega-context-reset-view',
   target: 'context:body',
   label: 'Reset chart view (50 bars)',
+  icon: 'omega-context-reset-view',
   order: -29,
   run: context => {
     workspace.active.resetView();
@@ -2859,6 +2986,7 @@ registerWidgetAction({
   id: 'omega-context-background',
   target: 'context:body',
   label: 'Chart background color…',
+  icon: 'omega-context-background',
   order: 120,
   run: context => {
     context.chart.renderer.openSettings('Canvas');
@@ -2868,6 +2996,7 @@ registerWidgetAction({
   id: 'omega-context-theme-light',
   target: 'context:body',
   label: 'Switch to Light theme',
+  icon: 'omega-context-theme-light',
   order: 121,
   when: () => currentTheme !== 'light',
   run: context => {
@@ -2879,6 +3008,7 @@ registerWidgetAction({
   id: 'omega-context-theme-dark',
   target: 'context:body',
   label: 'Switch to Dark blue theme',
+  icon: 'omega-context-theme-dark',
   order: 121,
   when: () => currentTheme !== 'dark',
   run: context => {
@@ -2890,6 +3020,7 @@ registerWidgetAction({
   id: 'omega-context-pine-window',
   target: 'context:body',
   label: 'Open Pine Editor in new window',
+  icon: 'omega-context-pine',
   order: 122,
   run: context => {
     const button = document.getElementById('btn-open-standalone-editor') as HTMLButtonElement | null;
@@ -2904,6 +3035,7 @@ registerWidgetAction({
   id: 'omega-context-start-replay',
   target: 'context:body',
   label: 'Start replay from here',
+  icon: 'omega-context-replay',
   order: 123,
   when: context => Number.isFinite(context.pointer?.time),
   run: context => {
@@ -2922,6 +3054,7 @@ registerWidgetAction({
   id: 'omega-context-open-replay',
   target: 'context:body',
   label: 'Open Replay',
+  icon: 'omega-context-replay-panel',
   order: 124,
   run: () => openReplayControls(),
 });

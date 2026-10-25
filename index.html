@@ -129,6 +129,8 @@
                 </div>
               </div>
             </details>
+            <button id="visual-backtest-toggle" class="btn" type="button" title="Open Visual Backtest" aria-label="Open Visual Backtest">Visual Backtest</button>
+            <button id="diagnostics-console-toggle" class="btn" type="button" title="Open local diagnostic console" aria-label="Open diagnostic console">Debug Console</button>
           </div>
           <div class="dock-pill">
             <label for="chart-layout-select">Layout:</label>
@@ -158,15 +160,11 @@
               <div class="timeframe-menu-content" role="menu" aria-label="Choose colour theme">
                 <button type="button" data-theme-choice="light" role="menuitemradio">Light</button>
                 <button type="button" data-theme-choice="dark" role="menuitemradio">Dark</button>
-                <button type="button" data-theme-choice="high-contrast" role="menuitemradio">High contrast (blue)</button>
+                <button type="button" data-theme-choice="high-contrast" role="menuitemradio">High contrast — light blue</button>
+                <button type="button" data-theme-choice="high-contrast-dark" role="menuitemradio">High contrast — dark blue</button>
               </div>
             </details>
             <button id="chart-tabs-toggle" class="btn" type="button" aria-pressed="false" title="Show or hide compact chart tabs">Tabs</button>
-            <button id="visual-backtest-toggle" class="btn" type="button" title="Open Visual Backtest" aria-label="Open Visual Backtest">Visual Backtest</button>
-            <span id="trading-account-status" class="trading-account-status" title="Embedded trading account">
-              <strong id="trading-account-mode">DEMO</strong>
-              <span id="trading-account-detail">Local account</span>
-            </span>
             <span id="connection-latency" class="connection-latency" title="Round-trip response time to the active broker or trading server" aria-live="polite">Server: — ms</span>
             <div class="platform-zoom-controls" role="group" aria-label="Platform size">
               <span class="platform-zoom-title">Size</span>
@@ -176,6 +174,13 @@
             </div>
             <button id="check-updates" class="btn" type="button">Check for updates</button>
           </div>
+          </div>
+          <div id="trading-account-status" class="trading-account-status" title="Selected trading account">
+            <span class="trading-account-label">Trading account</span>
+            <select id="trading-account-select" aria-label="Select trading account">
+              <option value="local-demo">DEMO · Local account</option>
+            </select>
+            <span class="trading-account-summary"><strong id="trading-account-mode">DEMO</strong><span id="trading-account-detail">Local account</span></span>
           </div>
         </div>
 
@@ -455,6 +460,7 @@
                       <div class="pine-ai-row">
                         <label class="pine-ai-field" for="pine-ai-provider">Provider
                           <select id="pine-ai-provider">
+                            <option value="local">Local OpenAI-compatible API</option>
                             <option value="gemini">Google Gemini</option>
                             <option value="groq">Groq</option>
                             <option value="openrouter">OpenRouter</option>
@@ -469,14 +475,34 @@
                           <select id="pine-ai-model" aria-label="AI model"></select>
                         </label>
                       </div>
-                      <label class="pine-ai-field" for="pine-ai-key">API key
-                        <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
-                      </label>
-                      <div class="pine-ai-row">
-                        <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
-                        <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                      <div id="pine-ai-cloud-settings">
+                        <label class="pine-ai-field" for="pine-ai-key">API key
+                          <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
+                          <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                        </div>
+                        <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
                       </div>
-                      <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
+                      <div id="pine-ai-local-settings" hidden>
+                        <label class="pine-ai-field" for="pine-ai-local-url">Local API base URL
+                          <input id="pine-ai-local-url" type="url" spellcheck="false" maxlength="500" placeholder="http://127.0.0.1:1234/v1">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-key">Optional local API key
+                          <input id="pine-ai-local-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Optional; encrypted if saved">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-model">Model ID
+                          <input id="pine-ai-local-model" type="text" list="pine-ai-local-models" spellcheck="false" maxlength="120" placeholder="Load models or enter a model ID">
+                          <datalist id="pine-ai-local-models"></datalist>
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-test-local" class="btn" type="button">Test endpoint &amp; load models</button>
+                          <button id="pine-ai-save-local" class="btn" type="button">Save local settings</button>
+                        </div>
+                        <button id="pine-ai-clear-local-key" class="btn" type="button">Remove saved local API key</button>
+                        <small>Localhost only. Prompts go directly to your local server; LuxAlgo research is separate and optional.</small>
+                      </div>
                     </div>
                   </details>
                   <button id="pine-ai-close" class="btn" type="button" aria-label="Close AI assistant">Close</button>
@@ -485,6 +511,10 @@
               <div id="pine-ai-history" data-panel-id="pine-ai-history" aria-label="Saved conversations" hidden></div>
               <div id="pine-ai-chat" role="log" aria-live="polite" aria-label="Conversation messages"></div>
               <p id="pine-ai-status" role="status" aria-live="polite"></p>
+              <label id="pine-ai-luxalgo-option" title="Search the public, read-only LuxAlgo Library over MCP and include the results with your prompt">
+                <input id="pine-ai-luxalgo-enabled" type="checkbox">
+                Include LuxAlgo Library research (MCP)
+              </label>
               <div id="pine-ai-composer">
                 <textarea id="pine-ai-prompt" maxlength="4000" aria-label="Message" placeholder="Ask about the current Pine script…"></textarea>
                 <button id="pine-ai-ask" class="btn btn-primary" type="button">Send</button>
@@ -599,10 +629,11 @@
             </section>
             <div id="broker-actions">
               <button id="broker-connect" class="btn btn-primary" type="button">Connect Read Only</button>
+              <button id="broker-save-credentials" class="btn" type="button" hidden>Save credentials</button>
               <button id="broker-refresh" class="btn" type="button" hidden>Refresh</button>
               <button id="broker-disconnect" class="btn" type="button" hidden>Disconnect</button>
             </div>
-            <p id="broker-status" role="status" aria-live="polite">Broker credentials are never saved by this panel.</p>
+            <p id="broker-status" role="status" aria-live="polite">Broker credentials are session-only unless you explicitly save supported credentials.</p>
             <div id="broker-accounts" aria-live="polite"></div>
             <div id="ctrader-quotes" aria-live="polite"></div>
           </div>
@@ -640,31 +671,6 @@
         </section>
       </div>
 
-      <div id="alpaca-feed-modal" data-panel-id="alpaca-feed" aria-hidden="true">
-        <section id="alpaca-feed-dialog" role="dialog" aria-modal="true" aria-labelledby="alpaca-feed-title">
-          <header id="alpaca-feed-header">
-            <strong id="alpaca-feed-title">Alpaca Stocks Market Data — Read Only</strong>
-            <button id="alpaca-feed-close" class="btn" type="button" aria-label="Close Alpaca feed panel">Close</button>
-          </header>
-          <div id="alpaca-feed-body">
-            <p>Connect an Alpaca market-data account to load historical and live US stock bars. This module is data-only and cannot submit or manage trades.</p>
-            <p class="alpaca-feed-setup">The free Basic plan provides IEX-only stock data (not the consolidated US market feed), up to 30 live symbols, and limited recent historical data. Alpaca's paid plans and account permissions may differ.</p>
-            <label class="broker-field" for="alpaca-key-id">Alpaca API Key ID
-              <input id="alpaca-key-id" type="text" autocomplete="off" spellcheck="false">
-            </label>
-            <label class="broker-field" for="alpaca-secret-key">Alpaca Secret Key
-              <input id="alpaca-secret-key" type="password" autocomplete="new-password" spellcheck="false">
-            </label>
-            <p class="alpaca-feed-setup">Keys are stored only after connection succeeds and only when operating-system encryption is available. Leave both fields blank to reconnect with saved keys. Supported chart intervals: 1, 5, 15, 30, 60 minutes and daily.</p>
-            <div id="alpaca-feed-actions">
-              <button id="alpaca-feed-connect" class="btn btn-primary" type="button">Connect to Alpaca</button>
-              <button id="alpaca-feed-disconnect" class="btn" type="button" hidden>Disconnect</button>
-            </div>
-            <p id="alpaca-feed-status" role="status" aria-live="polite">Not connected. No API credentials are used until you connect.</p>
-          </div>
-        </section>
-      </div>
-
       <div id="local-feeds-modal" aria-hidden="true" hidden>
         <section id="local-feeds-dialog" role="dialog" aria-modal="true" aria-labelledby="local-feeds-title">
           <header id="local-feeds-header">
@@ -673,7 +679,6 @@
           </header>
           <div id="local-feeds-body">
             <button class="local-feed-option" type="button" data-local-feed="mt5"><strong>MetaTrader 5</strong><span>Read-only prices from a locally running MT5 terminal.</span></button>
-            <button class="local-feed-option" type="button" data-local-feed="alpaca"><strong>Alpaca</strong><span>Read-only US stocks market data using your Alpaca credentials.</span></button>
           </div>
         </section>
       </div>
@@ -691,7 +696,6 @@
           <button id="broker-toggle" class="bottom-tab-btn" type="button">Broker</button>
           <button id="local-feeds-toggle" class="bottom-tab-btn" type="button">Local Feeds</button>
           <button id="mt5-feed-toggle" type="button" hidden></button>
-          <button id="alpaca-feed-toggle" type="button" hidden></button>
           <button id="backtest-toggle" class="bottom-tab-btn" type="button">Backtest</button>
           <button id="open-trades-toggle" class="bottom-tab-btn" type="button">Trades</button>
           <button id="trade-history-toggle" class="bottom-tab-btn" type="button">Trade History</button>

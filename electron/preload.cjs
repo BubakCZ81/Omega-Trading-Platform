@@ -1,5 +1,116 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+function safeDiagnosticMessage(value) {
+  if (typeof value !== 'string') return undefined;
+  return value
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/((?:api[_ -]?(?:key|secret)|authorization|access[_ -]?token|refresh[_ -]?token|password|client[_ -]?secret)\s*[:=]\s*)["']?[^,\s"'&]+/gi, '$1[REDACTED]')
+    .replace(/([?&](?:api[_-]?key|api[_-]?secret|token|access_token|refresh_token|signature|authorization)=)[^&\s]+/gi, '$1[REDACTED]')
+    .slice(0, 400);
+}
+
+const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+ipcRenderer.invoke = async (channel, ...args) => {
+  if (!String(channel).startsWith('diagnostics:')) {
+    const startedAt = Date.now();
+    ipcRenderer.send('diagnostics:event', { source: 'preload', type: 'method', name: String(channel), status: 'start' });
+    try {
+      const result = await originalInvoke(channel, ...args);
+      ipcRenderer.send('diagnostics:event', { source: 'preload', type: 'method', name: String(channel), status: 'ok', durationMs: Date.now() - startedAt });
+      return result;
+    } catch (error) {
+      ipcRenderer.send('diagnostics:event', {
+        source: 'preload',
+        type: 'method',
+        name: String(channel),
+        status: 'error',
+        message: error instanceof Error ? `${error.name}: ${safeDiagnosticMessage(error.message) || 'Unknown error'}` : 'Unknown error',
+        durationMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
+  }
+  return originalInvoke(channel, ...args);
+};
+
+function recordDiagnostic(type, fields = {}) {
+  ipcRenderer.send('diagnostics:event', { source: 'renderer', type, ...fields });
+}
+
+function describeTarget(target) {
+  if (!(target instanceof Element)) return undefined;
+  const element = target.closest('button,a,input,select,textarea,[role="button"],[role="menuitem"],summary,[tabindex]') || target;
+  const id = element.id ? `#${element.id}` : '';
+  const role = element.getAttribute('role');
+  const label = element.getAttribute('aria-label');
+  return `${element.tagName.toLowerCase()}${id}${role ? `[role=${role}]` : ''}${label ? `[aria=${label.slice(0, 60)}]` : ''}`.slice(0, 160);
+}
+
+window.addEventListener('click', event => {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  recordDiagnostic('click', { target: describeTarget(path[0] || event.target) });
+}, true);
+window.addEventListener('change', event => {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) {
+    recordDiagnostic('change', { target: describeTarget(event.target) });
+  }
+}, true);
+window.addEventListener('error', event => recordDiagnostic('error', {
+  name: 'window.error',
+  message: safeDiagnosticMessage(event.message),
+}), true);
+window.addEventListener('unhandledrejection', event => {
+  const reason = event.reason instanceof Error
+    ? `${event.reason.name}: ${event.reason.message}`
+    : typeof event.reason === 'string' ? event.reason : undefined;
+  recordDiagnostic('error', { name: 'window.unhandledrejection', message: safeDiagnosticMessage(reason) });
+}, true);
+document.addEventListener('toggle', event => {
+  if (event.target instanceof HTMLDetailsElement) {
+    recordDiagnostic('window', { name: event.target.open ? 'details.open' : 'details.close', target: describeTarget(event.target) });
+  }
+}, true);
+const dialogVisibility = new WeakMap();
+function observeDialog(element) {
+  if (!(element instanceof Element) || !element.matches('dialog,[role="dialog"]')) return;
+  const isOpen = element instanceof HTMLDialogElement
+    ? element.open
+    : !element.hidden && element.getAttribute('aria-hidden') !== 'true'
+      && getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden';
+  const previous = dialogVisibility.get(element);
+  dialogVisibility.set(element, isOpen);
+  if (previous !== undefined && previous !== isOpen) {
+    recordDiagnostic('window', { name: isOpen ? 'dialog.open' : 'dialog.close', target: describeTarget(element) });
+  }
+}
+const dialogObserver = new MutationObserver(records => {
+  for (const record of records) {
+    if (record.attributeName === 'aria-expanded' && record.target instanceof Element) {
+      recordDiagnostic('window', {
+        name: record.target.getAttribute('aria-expanded') === 'true' ? 'popup.open' : 'popup.close',
+        target: describeTarget(record.target),
+      });
+      continue;
+    }
+    if (record.target instanceof Element) observeDialog(record.target.closest('dialog,[role="dialog"]'));
+    for (const node of record.addedNodes || []) {
+      if (!(node instanceof Element)) continue;
+      observeDialog(node);
+      node.querySelectorAll('dialog,[role="dialog"]').forEach(observeDialog);
+    }
+  }
+});
+dialogObserver.observe(document, {
+  subtree: true,
+  childList: true,
+  attributes: true,
+  attributeFilter: ['open', 'hidden', 'aria-hidden', 'aria-expanded'],
+});
+document.querySelectorAll('dialog,[role="dialog"]').forEach(observeDialog);
+window.addEventListener('beforeunload', () => recordDiagnostic('window', { name: 'document.beforeunload' }));
+window.addEventListener('pageshow', () => recordDiagnostic('window', { name: 'document.pageshow' }));
+
 let pendingPineOpenScript = null;
 const pineOpenScriptCallbacks = new Set();
 ipcRenderer.on('pine-editor:open-script', (_event, script) => {
@@ -13,10 +124,23 @@ contextBridge.exposeInMainWorld('velaApp', {
   setZoomFactor: (factor) => ipcRenderer.invoke('app:set-zoom-factor', factor),
 });
 
+contextBridge.exposeInMainWorld('velaDiagnostics', {
+  openConsole: () => ipcRenderer.invoke('diagnostics:open'),
+  getRecent: () => ipcRenderer.invoke('diagnostics:get-recent'),
+  onEntry: (callback) => {
+    const listener = (_event, entry) => callback(entry);
+    ipcRenderer.on('diagnostics:entry', listener);
+    return () => ipcRenderer.removeListener('diagnostics:entry', listener);
+  },
+});
+
 contextBridge.exposeInMainWorld('velaBroker', {
   listBrokers: () => ipcRenderer.invoke('broker:list'),
   connectReadOnly: (brokerId, credentials) => ipcRenderer.invoke('broker:connect-read-only', { brokerId, credentials }),
+  saveAlpacaCredentials: (credentials) => ipcRenderer.invoke('broker:save-alpaca-credentials', credentials),
+  hasSavedAlpacaCredentials: () => ipcRenderer.invoke('broker:has-saved-alpaca-credentials'),
   fetchSnapshot: () => ipcRenderer.invoke('broker:fetch-snapshot'),
+  fetchHistoricalBars: (request) => ipcRenderer.invoke('broker:fetch-bars', request),
   authorizeCTrader: (credentials) => ipcRenderer.invoke('ctrader:authorize', credentials),
   selectCTraderAccount: (accountId) => ipcRenderer.invoke('ctrader:select-account', accountId),
   subscribeCTraderSymbol: (symbolId) => ipcRenderer.invoke('ctrader:subscribe-symbol', symbolId),
@@ -41,26 +165,6 @@ contextBridge.exposeInMainWorld('velaMt5', {
   disconnect: () => ipcRenderer.invoke('mt5:disconnect'),
 });
 
-contextBridge.exposeInMainWorld('velaAlpaca', {
-  connect: (credentials) => ipcRenderer.invoke('alpaca:connect', credentials),
-  status: () => ipcRenderer.invoke('alpaca:status'),
-  bars: (request) => ipcRenderer.invoke('alpaca:bars', request),
-  assets: () => ipcRenderer.invoke('alpaca:assets'),
-  subscribe: (ticker, timeframe) => ipcRenderer.invoke('alpaca:subscribe', { ticker, timeframe }),
-  unsubscribe: (subscriptionId) => ipcRenderer.invoke('alpaca:unsubscribe', subscriptionId),
-  onBar: (callback) => {
-    const listener = (_event, bar) => callback(bar);
-    ipcRenderer.on('alpaca:bar', listener);
-    return () => ipcRenderer.removeListener('alpaca:bar', listener);
-  },
-  onStatus: (callback) => {
-    const listener = (_event, state) => callback(state);
-    ipcRenderer.on('alpaca:status', listener);
-    return () => ipcRenderer.removeListener('alpaca:status', listener);
-  },
-  disconnect: () => ipcRenderer.invoke('alpaca:disconnect'),
-});
-
 contextBridge.exposeInMainWorld('velaWorkspaceFiles', {
   load: () => ipcRenderer.invoke('workspace:load'),
   save: (state) => ipcRenderer.invoke('workspace:save', state),
@@ -78,6 +182,9 @@ contextBridge.exposeInMainWorld('velaAi', {
   saveKey: (provider, apiKey) => ipcRenderer.invoke('ai:save-key', { provider, apiKey }),
   clearKey: (provider) => ipcRenderer.invoke('ai:clear-key', provider),
   testKey: (provider, apiKey) => ipcRenderer.invoke('ai:test-key', { provider, apiKey }),
+  localConfig: () => ipcRenderer.invoke('ai:local-config'),
+  saveLocalConfig: (request) => ipcRenderer.invoke('ai:save-local-config', request),
+  testLocalConfig: (request) => ipcRenderer.invoke('ai:test-local-config', request),
   complete: (request) => ipcRenderer.invoke('ai:complete', request),
 });
 

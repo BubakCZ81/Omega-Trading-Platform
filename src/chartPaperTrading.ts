@@ -20,6 +20,7 @@ import {
   type ProtectionMode,
 } from './paperTradeMath';
 import { calculatePaperAccount, type PaperLedgerTrade } from './paperTradingAnalytics';
+import { createSingleFlightGate } from './singleFlight';
 
 const STORAGE_KEY = 'omega-paper-trades-v1';
 const PENDING_STORAGE_KEY = 'omega-paper-pending-orders-v1';
@@ -82,8 +83,19 @@ interface TradeOverlayLevel {
   label: string;
   color: string;
   lineWidth: number;
+  readonly?: boolean;
   pending?: boolean;
   hoveredAction?: OverlayAction;
+}
+
+interface BrokerChartPosition {
+  positionId: string;
+  symbol: string;
+  side: string;
+  volume: string;
+  entryPrice: number;
+  stopLoss?: number;
+  takeProfit?: number;
 }
 
 interface TradeOverlayHit {
@@ -168,6 +180,8 @@ interface ChartState {
 
 const chartStates = new Map<string, ChartState>();
 const trades = new Map<string, PaperTrade>();
+const brokerChartPositions = new Map<string, BrokerChartPosition>();
+const tradeCreationGate = createSingleFlightGate();
 let overlayRenderFrame: number | null = null;
 const restoredCells = new Set<string>();
 let savedTrades: PaperTrade[] = [];
@@ -409,7 +423,7 @@ function drawTradeLevels(ctx: CanvasRenderingContext2D, args: RendererLayerArgs)
     // Entry, stop-loss and take-profit levels must remain equally visible.
     ctx.setLineDash([]);
     ctx.font = '700 13px sans-serif';
-    const controlCount = level.role === 'entry' ? (level.pending ? 1 : 2) : 0;
+    const controlCount = level.role === 'entry' && !level.readonly ? (level.pending ? 1 : 2) : 0;
     const labelWidth = ctx.measureText(level.label).width + labelPadding * 2
       + (controlCount ? controlSize * controlCount + controlGap * (controlCount + 1) : 0);
     const labelX = coords.width - labelWidth - 6;
@@ -430,7 +444,7 @@ function drawTradeLevels(ctx: CanvasRenderingContext2D, args: RendererLayerArgs)
     ctx.stroke();
     ctx.fillStyle = '#ffffff';
     ctx.textBaseline = 'middle';
-    if (level.role === 'entry') {
+    if (level.role === 'entry' && !level.readonly) {
       const controls: Array<{ action: OverlayAction; x: number }> = level.pending
         ? [{ action: 'cancel', x: labelX + labelWidth - controlSize - controlGap }]
         : [
@@ -480,7 +494,9 @@ function drawTradeLevels(ctx: CanvasRenderingContext2D, args: RendererLayerArgs)
     } else {
       ctx.fillText(level.label, labelX + labelPadding, y);
     }
-    hits.push({ tradeId: level.tradeId, role: level.role, x: labelX, y, width: labelWidth, height: labelHeight });
+    if (!level.readonly) {
+      hits.push({ tradeId: level.tradeId, role: level.role, x: labelX, y, width: labelWidth, height: labelHeight });
+    }
   }
   ctx.restore();
   const canvas = ctx.canvas as TradeOverlayCanvas;
@@ -667,6 +683,7 @@ function initializePendingOrderModal(): void {
   const preview = document.getElementById('paper-pending-order-protection-preview');
   if (!modal || !form || !closeButton || !cancelButton || !sideField || !entryField || !protectionMode || !stopField || !targetField || !lotsField || !message || !submitButton) return;
   pendingModalInitialized = true;
+  const submissionGate = createSingleFlightGate();
 
   const close = () => hidePendingOrderModal();
   closeButton.addEventListener('click', close);
@@ -738,6 +755,8 @@ function initializePendingOrderModal(): void {
       return;
     }
 
+    const releaseSubmission = submissionGate.acquire();
+    if (!releaseSubmission) return;
     submitButton.disabled = true;
     message.textContent = 'Validating symbol details…';
     delete message.dataset.state;
@@ -785,6 +804,7 @@ function initializePendingOrderModal(): void {
       message.textContent = error instanceof Error ? error.message : String(error);
       message.dataset.state = 'error';
     } finally {
+      releaseSubmission();
       submitButton.disabled = false;
     }
   });
@@ -907,6 +927,20 @@ function initializeTradingPane(workspace: VelaWorkspace): void {
   paneLots.value = lotsInput.value;
 
   const placeTradeLauncher = () => {
+    for (const button of document.querySelectorAll<HTMLButtonElement>(
+      '.vela-widget-panels .vela-widget-tool, button[class*="vela-widget-panel-"], #trading-pane-toggle',
+    )) {
+      const label = button.getAttribute('aria-label')?.trim();
+      if (!label) continue;
+      let labelElement = button.querySelector<HTMLSpanElement>(':scope > .omega-panel-button-label');
+      if (!labelElement) {
+        labelElement = document.createElement('span');
+        labelElement.className = 'omega-panel-button-label';
+        labelElement.setAttribute('aria-hidden', 'true');
+        button.append(labelElement);
+      }
+      if (labelElement.textContent !== label) labelElement.textContent = label;
+    }
     const alertButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => {
       const label = `${button.getAttribute('aria-label') ?? ''} ${button.getAttribute('title') ?? ''}`.toLowerCase();
       return button !== toggle && label.includes('alert');
@@ -920,7 +954,12 @@ function initializeTradingPane(workspace: VelaWorkspace): void {
   };
   placeTradeLauncher();
   const toolbarObserver = new MutationObserver(placeTradeLauncher);
-  toolbarObserver.observe(document.body, { childList: true, subtree: true });
+  toolbarObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['aria-label'],
+    childList: true,
+    subtree: true,
+  });
 
   let side: PaperTradeSide = 'buy';
   let paneInstrument: { symbol: string; contractSize: number; pipSize: number; currency: string } | null = null;
@@ -1164,6 +1203,45 @@ function updateTradeOverlay(state: ChartState): void {
           ? (state.hoveredControlId === `${trade.id}:reverse` ? 'reverse'
             : state.hoveredControlId === `${trade.id}:close` ? 'close' : undefined)
           : undefined,
+      });
+    }
+  }
+  for (const position of brokerChartPositions.values()) {
+    if (cleanSymbol(position.symbol) !== stateSym) continue;
+    const side = position.side.toUpperCase();
+    const color = side === 'BUY' ? '#26a69a' : '#ef5350';
+    const id = `broker:${position.positionId}`;
+    levels.push({
+      tradeId: id,
+      role: 'entry',
+      price: position.entryPrice,
+      label: `${side} ${position.volume} units · cTrader`,
+      color,
+      lineWidth: 2,
+      readonly: true,
+    });
+    const stopLoss = position.stopLoss;
+    if (stopLoss !== undefined && Number.isFinite(stopLoss) && stopLoss > 0) {
+      levels.push({
+        tradeId: `${id}:sl`,
+        role: 'stopLoss',
+        price: stopLoss,
+        label: `cTrader SL ${stopLoss}`,
+        color: '#ef5350',
+        lineWidth: 1,
+        readonly: true,
+      });
+    }
+    const takeProfit = position.takeProfit;
+    if (takeProfit !== undefined && Number.isFinite(takeProfit) && takeProfit > 0) {
+      levels.push({
+        tradeId: `${id}:tp`,
+        role: 'takeProfit',
+        price: takeProfit,
+        label: `cTrader TP ${takeProfit}`,
+        color: '#26a69a',
+        lineWidth: 1,
+        readonly: true,
       });
     }
   }
@@ -1572,6 +1650,8 @@ async function openTrade(state: ChartState, side: PaperTradeSide): Promise<void>
     return;
   }
 
+  const releaseTradeCreation = tradeCreationGate.acquire();
+  if (!releaseTradeCreation) return;
   buyButton.disabled = true;
   sellButton.disabled = true;
   setStatus('Creating paper trade...');
@@ -1625,6 +1705,7 @@ async function openTrade(state: ChartState, side: PaperTradeSide): Promise<void>
     console.error('Could not create paper trade:', error);
     setStatus(`Could not create paper trade: ${message}`, 'error');
   } finally {
+    releaseTradeCreation();
     buyButton.disabled = false;
     sellButton.disabled = false;
   }
@@ -1749,6 +1830,22 @@ export function initializeChartPaperTrading(workspace: VelaWorkspace): () => voi
   savedTrades = readSavedTrades();
   for (const cell of workspace.cells()) attachChart(cell.id, cell.chart, cell.host);
   initializeTradingPane(workspace);
+  const onBrokerPositionsUpdated = (event: Event) => {
+    const positions = (event as CustomEvent<BrokerChartPosition[]>).detail;
+    brokerChartPositions.clear();
+    if (Array.isArray(positions)) {
+      for (const position of positions) {
+        if (!position || !position.positionId || !position.symbol
+          || !Number.isFinite(position.entryPrice) || position.entryPrice <= 0
+          || !Number.isFinite(Number(position.volume)) || Number(position.volume) <= 0
+          || typeof position.side !== 'string'
+          || !['BUY', 'SELL'].includes(position.side.toUpperCase())) continue;
+        brokerChartPositions.set(position.positionId, position);
+      }
+    }
+    updateAllTradeOverlays();
+  };
+  document.addEventListener('omega:ctrader-positions-updated', onBrokerPositionsUpdated);
   const openTradesModal = document.getElementById('paper-open-trades-modal') as HTMLDivElement | null;
   const openTradesList = document.getElementById('paper-open-trades-list') as HTMLDivElement | null;
   const openTradesToggle = document.getElementById('open-trades-toggle') as HTMLButtonElement | null;
@@ -2520,6 +2617,7 @@ export function initializeChartPaperTrading(workspace: VelaWorkspace): () => voi
     overlayRenderFrame = null;
     unsubscribeCells();
     unsubscribeDestroyed();
+    document.removeEventListener('omega:ctrader-positions-updated', onBrokerPositionsUpdated);
     window.removeEventListener('keydown', onMeasurementKeyDown);
     cancelMeasurement();
     document.getElementById('omega-measurement-overlay')?.remove();
@@ -2528,6 +2626,7 @@ export function initializeChartPaperTrading(workspace: VelaWorkspace): () => voi
       state.tradeOverlay.remove();
     }
     chartStates.clear();
+    brokerChartPositions.clear();
     restoredCells.clear();
     refreshOpenTradesList = null;
   };

@@ -1,6 +1,7 @@
 import './visualBacktest.css';
 import { calculateBacktestAnalytics, type BacktestAnalytics } from './backtestStats';
-import type { StrategyState, StrategyTrade } from '@luxalgo/vela';
+import type { DataProvider, OHLCV, StrategyState, StrategyTrade } from '@luxalgo/vela';
+import { BACKTEST_PROVIDER_PREFIX, loadBacktestHistory, registerBacktestHistoryProvider } from './backtestHistory';
 
 type VisualChartCell = {
   id: string;
@@ -10,9 +11,13 @@ type VisualChartCell = {
     data: {
       providers: () => Array<{ name: string; displayName?: string }>;
       resolve: (symbol: string) => { provider?: string; ticker?: string } | null;
+      providerInstance: (name: string) => DataProvider | undefined;
+      registerProvider: (name: string, provider: DataProvider) => unknown;
+      unregisterProvider: (name: string) => unknown;
+      ready: () => Promise<void>;
     };
     replay: { bounds?: { first: number; last: number } | null };
-    setMarket: (market: { symbol?: string; timeframe?: string; visibleRange?: { from: number; to: number } }) => Promise<void>;
+    setMarket: (market: { symbol?: string; timeframe?: string; bars?: number; data?: OHLCV[]; visibleRange?: { from: number; to: number } }) => Promise<void>;
     historyComplete: () => Promise<void>;
     indicators: () => Array<VisualStrategyHandle>;
   };
@@ -97,7 +102,7 @@ export function initializeVisualBacktest(
       <label>From <input data-vbt="from" type="datetime-local" step="60"></label>
       <label>To <input data-vbt="to" type="datetime-local" step="60"></label>
       <label>Speed <select data-vbt="speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select></label>
-      <button type="button" data-vbt="start" class="omega-vbt-primary">Start</button>
+      <button type="button" data-vbt="start" class="omega-vbt-primary" title="Load historical candles for the selected period">Load History</button>
       <button type="button" data-vbt="play" disabled>Play</button>
       <button type="button" data-vbt="step" disabled>Step</button>
       <button type="button" data-vbt="stop" disabled>Stop</button>
@@ -133,6 +138,9 @@ export function initializeVisualBacktest(
   let replayEndTime: number | null = null;
   let renderRevision = 0;
   let startRevision = 0;
+  let startRequestInFlight = false;
+  let backtestProviderRevision = 0;
+  let activeBacktestProviderName: string | null = null;
 
   const selectActiveStrategy = (): VisualStrategyHandle | null => testCell?.chart.indicators().find(item => item.id === strategySelect.value) ?? null;
 
@@ -230,6 +238,7 @@ export function initializeVisualBacktest(
     feed.replaceChildren(new Option('Auto', ''));
     const providers = chart.chart.data.providers();
     for (const provider of providers) {
+      if (provider.name.toLowerCase().startsWith(`${BACKTEST_PROVIDER_PREFIX}_`)) continue;
       feed.add(new Option(provider.displayName ?? provider.name, provider.name.toLowerCase()));
     }
     if (providers.some(provider => provider.name.toLowerCase() === selected)) feed.value = selected;
@@ -268,7 +277,6 @@ export function initializeVisualBacktest(
   });
   query<HTMLButtonElement>('close').addEventListener('click', () => {
     ++startRevision;
-    start.disabled = false;
     workspace.replay.stop();
     pausePlayback();
     root.hidden = true;
@@ -296,22 +304,58 @@ export function initializeVisualBacktest(
     if (!testCell) { status.textContent = 'No free chart tab is available for Visual Backtest.'; return; }
     const ticker = symbol.value.trim().toUpperCase();
     if (!ticker) { status.textContent = 'Enter an asset symbol.'; return; }
+    if (startRequestInFlight) return;
     const requestRevision = ++startRevision;
+    startRequestInFlight = true;
     replayEndTime = endTime;
-    workspace.setActiveCell(testCell.id);
-    pausePlayback();
     start.disabled = true; status.textContent = 'Loading historical data…';
     try {
+      workspace.setActiveCell(testCell.id);
+      pausePlayback();
       const marketSymbol = feed.value ? `${feed.value}:${ticker}` : ticker;
-      await testCell.chart.setMarket({
-        symbol: marketSymbol,
-        timeframe: timeframe.value,
-        visibleRange: { from: startTime, to: endTime },
-      });
+      const resolved = testCell.chart.data.resolve(marketSymbol);
+      if (!resolved?.provider || !resolved.ticker) {
+        throw new Error(`Could not resolve ${ticker} to a market-data provider.`);
+      }
+      const provider = testCell.chart.data.providerInstance(resolved.provider);
+      if (!provider) throw new Error(`The ${resolved.provider} data provider is unavailable.`);
+      const bars = await loadBacktestHistory(
+        provider,
+        resolved.ticker,
+        timeframe.value,
+        startTime,
+        endTime,
+        () => requestRevision === startRevision,
+      );
       if (requestRevision !== startRevision) return;
+      if (!bars?.length) {
+        throw new Error(`No candles were returned for ${ticker} in the selected period. Check the feed, symbol, date range, and historical-data access.`);
+      }
+      const backtestProviderName = `${BACKTEST_PROVIDER_PREFIX}_${++backtestProviderRevision}`;
+      const registeredProvider = await registerBacktestHistoryProvider(
+        testCell.chart.data,
+        provider,
+        backtestProviderName,
+        bars,
+        () => requestRevision === startRevision,
+      );
+      if (!registeredProvider) return;
+      const backtestSymbol = `${backtestProviderName}:${resolved.ticker}`;
+      await testCell.chart.setMarket({
+        symbol: backtestSymbol,
+        timeframe: timeframe.value,
+        bars: bars.length,
+      });
+      const previousProviderName = activeBacktestProviderName;
+      activeBacktestProviderName = backtestProviderName;
+      if (previousProviderName) testCell.chart.data.unregisterProvider(previousProviderName);
+      if (requestRevision !== startRevision) return;
+      await testCell.chart.historyComplete();
+      if (requestRevision !== startRevision) return;
+      await testCell.chart.setMarket({ visibleRange: { from: startTime, to: endTime } });
       const bounds = testCell.chart.replay.bounds;
       if (!bounds || startTime > bounds.last) {
-        throw new Error('No historical candles are available inside the selected period.');
+        throw new Error(`Loaded ${bars.length.toLocaleString()} candles, but none fall inside the selected period.`);
       }
       replayEndTime = Math.min(endTime, bounds.last);
       await workspace.replay.start({ from: startTime, cell: testCell.id });
@@ -322,14 +366,15 @@ export function initializeVisualBacktest(
       if (!workspace.replay.state.active) {
         throw new Error('The selected period has no replayable historical candles.');
       }
-      status.textContent = 'Ready. Press Play to begin visual playback.';
+      status.textContent = `Loaded ${bars.length.toLocaleString()} historical candles. Press Play to begin visual playback.`;
     } catch (error) {
       if (requestRevision === startRevision) {
         status.textContent = `Could not start Visual Backtest: ${error instanceof Error ? error.message : String(error)}`;
       }
     } finally {
+      startRequestInFlight = false;
+      start.disabled = false;
       if (requestRevision === startRevision) {
-        start.disabled = false;
         syncReplay();
       }
     }
@@ -349,7 +394,6 @@ export function initializeVisualBacktest(
   });
   stop.addEventListener('click', () => {
     ++startRevision;
-    start.disabled = false;
     workspace.replay.stop();
     pausePlayback();
     status.textContent = 'Visual Backtest stopped.';

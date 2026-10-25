@@ -1,5 +1,5 @@
 export interface PineAiProviderStatus {
-  id: 'gemini' | 'groq' | 'openrouter' | 'anthropic' | 'cohere' | 'deepseek' | 'mistral' | 'together';
+  id: 'local' | 'gemini' | 'groq' | 'openrouter' | 'anthropic' | 'cohere' | 'deepseek' | 'mistral' | 'together';
   name: string;
   configured: boolean;
 }
@@ -19,12 +19,16 @@ interface PineAiBridge {
     defaultModel: string;
     providers: PineAiProviderStatus[];
   }>;
+  localConfig(): Promise<{ baseUrl: string; model: string; hasApiKey: boolean }>;
+  saveLocalConfig(request: { baseUrl: string; model: string; apiKey?: string; clearApiKey?: boolean }): Promise<{ baseUrl: string; model: string; hasApiKey: boolean }>;
+  testLocalConfig(request: { baseUrl: string; apiKey?: string }): Promise<{ models: PineAiModel[]; defaultModel: string }>;
   complete(request: {
     provider: PineAiProviderStatus['id'];
     model: string;
     prompt: string;
     source: string;
     scriptName: string;
+    useLuxAlgoMcp?: boolean;
   }): Promise<{ text: string; model: string }>;
 }
 
@@ -57,6 +61,7 @@ export interface PineAiAssistantOptions {
 
 const historyStorageKey = 'omega_pine_ai_conversations';
 const defaultModels: Record<PineAiProviderStatus['id'], string> = {
+  local: '',
   gemini: 'gemini-2.5-flash',
   groq: 'llama-3.3-70b-versatile',
   openrouter: 'openrouter/auto',
@@ -115,8 +120,18 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
   const provider = document.getElementById('pine-ai-provider') as HTMLSelectElement;
   const model = document.getElementById('pine-ai-model') as HTMLSelectElement;
   const key = document.getElementById('pine-ai-key') as HTMLInputElement;
+  const cloudSettings = document.getElementById('pine-ai-cloud-settings') as HTMLDivElement;
+  const localSettings = document.getElementById('pine-ai-local-settings') as HTMLDivElement;
+  const localUrl = document.getElementById('pine-ai-local-url') as HTMLInputElement;
+  const localKey = document.getElementById('pine-ai-local-key') as HTMLInputElement;
+  const localModel = document.getElementById('pine-ai-local-model') as HTMLInputElement;
+  const localModels = document.getElementById('pine-ai-local-models') as HTMLDataListElement;
+  const testLocal = document.getElementById('pine-ai-test-local') as HTMLButtonElement;
+  const saveLocal = document.getElementById('pine-ai-save-local') as HTMLButtonElement;
+  const clearLocalKey = document.getElementById('pine-ai-clear-local-key') as HTMLButtonElement;
   const prompt = document.getElementById('pine-ai-prompt') as HTMLTextAreaElement;
   const status = document.getElementById('pine-ai-status') as HTMLParagraphElement;
+  const luxAlgoEnabled = document.getElementById('pine-ai-luxalgo-enabled') as HTMLInputElement;
   const chat = document.getElementById('pine-ai-chat') as HTMLDivElement;
   const history = document.getElementById('pine-ai-history') as HTMLDivElement;
   const conversationTitleElement = document.getElementById('pine-ai-conversation-title') as HTMLParagraphElement;
@@ -138,6 +153,7 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
   const configuredProviders = new Map<PineAiProviderStatus['id'], boolean>();
   let conversations = loadConversations();
   let activeConversationId = conversations[0]?.id ?? '';
+  luxAlgoEnabled.checked = localStorage.getItem('omega_ai_luxalgo_mcp') === 'true';
 
   const setStatus = (message: string, isError = false) => {
     status.textContent = message;
@@ -324,10 +340,13 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
 
   const renderModelStatus = (keyState?: string) => {
     const providerName = provider.selectedOptions[0]?.textContent?.trim() || provider.value;
-    const selectedModel = aiModels.get(selectedProvider())?.find(item => item.id === model.value);
+    const selectedModel = selectedProvider() === 'local'
+      ? aiModels.get('local')?.find(item => item.id === localModel.value)
+      : aiModels.get(selectedProvider())?.find(item => item.id === model.value);
+    const modelId = selectedProvider() === 'local' ? localModel.value : model.value;
     const modelName = selectedModel && selectedModel.name !== selectedModel.id
       ? `${selectedModel.name} (${selectedModel.id})`
-      : model.value || 'No model selected';
+      : modelId || 'No model selected';
     const configured = configuredProviders.get(selectedProvider());
     const keyLabel = keyState ?? (configured === undefined
       ? 'key status unknown'
@@ -371,6 +390,25 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
     try {
       const providers = await window.velaAi.providers();
       for (const item of providers) configuredProviders.set(item.id, item.configured);
+      if (selectedProvider() === 'local') {
+        const config = await window.velaAi.localConfig();
+        localUrl.value = config.baseUrl;
+        localKey.value = '';
+        localModel.value = config.model;
+        localSettings.hidden = false;
+        cloudSettings.hidden = true;
+        model.hidden = true;
+        renderModelStatus(configuredProviders.get('local')
+          ? (config.hasApiKey ? 'local endpoint · API key encrypted' : 'local endpoint · no key required')
+          : 'local endpoint not saved');
+        setStatus(configuredProviders.get('local')
+          ? `Local endpoint saved at ${config.baseUrl}. Prompts stay on this computer unless LuxAlgo MCP research is enabled.`
+          : 'Enter a localhost endpoint, test it, then save the model settings.');
+        return;
+      }
+      localSettings.hidden = true;
+      cloudSettings.hidden = false;
+      model.hidden = false;
       const selected = providers.find(item => item.id === selectedProvider());
       renderModelStatus();
       setStatus(selected?.configured
@@ -435,7 +473,11 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
     const text = prompt.value.trim();
     if (!text) return setStatus('Describe what you want the assistant to do.');
     ask.disabled = true;
-    setStatus('Sending the prompt and current Pine script to your selected AI provider…');
+    setStatus(luxAlgoEnabled.checked
+      ? 'Searching the public LuxAlgo Library, then sending the prompt and Pine script to your selected AI provider…'
+      : selectedProvider() === 'local'
+        ? 'Sending the prompt and current Pine script to your localhost model…'
+        : 'Sending the prompt and current Pine script to your selected AI provider…');
     const conversation = activeConversation();
     const conversationId = conversation.id;
     conversation.messages.push({ role: 'user', content: text });
@@ -447,10 +489,11 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
     try {
       const result = await window.velaAi.complete({
         provider: selectedProvider(),
-        model: model.value.trim(),
+        model: selectedProvider() === 'local' ? localModel.value.trim() : model.value.trim(),
         prompt: makeConversationPrompt(conversation.messages, text),
         source: options.getEditorValue(),
         scriptName: options.getCurrentScriptName(),
+        useLuxAlgoMcp: luxAlgoEnabled.checked,
       });
       conversation.messages.push({ role: 'assistant', content: result.text });
       conversation.updatedAt = Date.now();
@@ -459,7 +502,7 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
         renderConversation();
         setStatus(`Response from ${result.model}. Copy any code you want into the Pine editor.`);
       }
-      localStorage.setItem(`omega_ai_model_${selectedProvider()}`, model.value.trim());
+      localStorage.setItem(`omega_ai_model_${selectedProvider()}`, selectedProvider() === 'local' ? localModel.value.trim() : model.value.trim());
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), true);
     } finally {
@@ -525,7 +568,7 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
   provider.addEventListener('change', () => {
     key.value = '';
     syncModel();
-    renderModelStatus('checking key…');
+    renderModelStatus(selectedProvider() === 'local' ? 'loading local endpoint…' : 'checking key…');
     void refreshProviderStatus();
   });
 
@@ -540,6 +583,70 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
   model.addEventListener('change', () => {
     localStorage.setItem(`omega_ai_model_${selectedProvider()}`, model.value.trim());
     renderModelStatus();
+  });
+  localModel.addEventListener('input', () => renderModelStatus());
+  testLocal.addEventListener('click', async () => {
+    if (!window.velaAi) return setStatus('Local AI endpoint testing is available in the Omega desktop app.', true);
+    testLocal.disabled = true;
+    try {
+      const result = await window.velaAi.testLocalConfig({ baseUrl: localUrl.value.trim(), apiKey: localKey.value });
+      aiModels.set('local', result.models);
+      localModels.replaceChildren(...result.models.map(item => {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.label = item.name;
+        return option;
+      }));
+      if (!localModel.value.trim() || !result.models.some(item => item.id === localModel.value)) {
+        localModel.value = result.defaultModel;
+      }
+      renderModelStatus('endpoint reachable');
+      setStatus(`Connected to localhost. Loaded ${result.models.length} models; choose one and save the settings.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      testLocal.disabled = false;
+    }
+  });
+  saveLocal.addEventListener('click', async () => {
+    if (!window.velaAi) return setStatus('Local AI settings are available in the Omega desktop app.', true);
+    saveLocal.disabled = true;
+    try {
+      const result = await window.velaAi.saveLocalConfig({
+        baseUrl: localUrl.value.trim(),
+        model: localModel.value.trim(),
+        apiKey: localKey.value,
+      });
+      localUrl.value = result.baseUrl;
+      localModel.value = result.model;
+      localKey.value = '';
+      configuredProviders.set('local', true);
+      renderModelStatus(result.hasApiKey ? 'local API key encrypted' : 'no API key required');
+      setStatus(`Saved localhost model ${result.model} at ${result.baseUrl}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      saveLocal.disabled = false;
+    }
+  });
+  clearLocalKey.addEventListener('click', async () => {
+    if (!window.velaAi) return setStatus('Local AI settings are available in the Omega desktop app.', true);
+    clearLocalKey.disabled = true;
+    try {
+      const result = await window.velaAi.saveLocalConfig({
+        baseUrl: localUrl.value.trim(),
+        model: localModel.value.trim(),
+        clearApiKey: true,
+      });
+      configuredProviders.set('local', true);
+      localKey.value = '';
+      renderModelStatus('no API key required');
+      setStatus(`Removed the saved local API key. The endpoint at ${result.baseUrl} remains configured.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      clearLocalKey.disabled = false;
+    }
   });
   saveKey.addEventListener('click', async () => {
     if (!window.velaAi) return setStatus('This browser preview cannot access encrypted key storage. Use the Omega desktop app to save an API key.', true);
@@ -593,6 +700,12 @@ export function createPineAiAssistant(options: PineAiAssistantOptions): PineAiAs
     }
   });
   ask.addEventListener('click', () => void submitPrompt());
+  luxAlgoEnabled.addEventListener('change', () => {
+    localStorage.setItem('omega_ai_luxalgo_mcp', String(luxAlgoEnabled.checked));
+    setStatus(luxAlgoEnabled.checked
+      ? 'LuxAlgo Library MCP research is enabled for the next prompt.'
+      : 'LuxAlgo Library MCP research is disabled.');
+  });
   prompt.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();

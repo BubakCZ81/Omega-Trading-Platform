@@ -80,18 +80,41 @@ body[data-theme-variant="high-contrast"] {
   --omega-warning: #6e4700;
 }
 
-body[data-theme-variant="high-contrast"] :is(button, input, select, textarea, [role="button"], summary) {
+body[data-theme-variant="high-contrast-dark"] {
+  --omega-bg: #101d30;
+  --omega-surface: #162842;
+  --omega-elevated: #203957;
+  --omega-text: #f5f9ff;
+  --omega-muted: #d2e1f5;
+  --omega-border: #9bbde5;
+  --omega-accent: #70b7ff;
+  --omega-accent-hover: #a1d0ff;
+  --omega-error: #ff6473;
+  --omega-success: #00c98d;
+  --omega-warning: #ffd166;
+}
+
+body[data-theme-variant^="high-contrast"] :is(button, input, select, textarea, [role="button"], summary) {
   outline-color: var(--omega-accent);
 }
 
-body[data-theme-variant="high-contrast"] :is(button, input, select, textarea, summary) {
+body[data-theme-variant^="high-contrast"] :is(button, input, select, textarea, summary) {
   border-color: var(--omega-border);
 }
 
-body[data-theme-variant="high-contrast"] :is(button, input, select, textarea):focus-visible,
-body[data-theme-variant="high-contrast"] summary:focus-visible {
+body[data-theme-variant^="high-contrast"] :is(button, input, select, textarea):focus-visible,
+body[data-theme-variant^="high-contrast"] summary:focus-visible {
   outline: 3px solid var(--omega-accent);
   outline-offset: 2px;
+}
+
+.vela-workspace .vela-panel,
+#editor-drawer,
+#console-panel,
+#pine-reference,
+#pine-ai-assistant,
+#omega-trading-pane {
+  border: 1px solid var(--omega-border);
 }
 
 /* ============================================================
@@ -209,8 +232,9 @@ input, textarea, select, [contenteditable="true"],
       }
       .chart-tab-add:hover:not(:disabled) { color: var(--omega-text); background: var(--omega-border); border-color: var(--omega-accent); }
       .chart-tab-add:disabled { opacity: .45; cursor: not-allowed; }
-      #chart-grid.omega-tabs-mode .vela-cell { visibility: hidden; pointer-events: none; z-index: 0; }
-      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] { visibility: visible; pointer-events: auto; z-index: 1; }
+      #chart-grid.omega-tabs-mode .vela-cell { visibility: hidden; pointer-events: none; z-index: 0 !important; }
+      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] { visibility: visible; pointer-events: auto; z-index: 10 !important; isolation: isolate; }
+      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] .vela-ui-layer { visibility: visible; pointer-events: auto; z-index: 1000000 !important; }
       
       /* Chart cells in workspace */
       .vela-cell {
@@ -306,7 +330,7 @@ input, textarea, select, [contenteditable="true"],
         min-height: 120px;
         max-height: 70vh;
         background: var(--omega-bg);
-        border-top: 1px solid var(--omega-elevated);
+        border: 1px solid var(--omega-border);
         display: none;
         flex-direction: column;
         flex-shrink: 0;
@@ -352,7 +376,7 @@ input, textarea, select, [contenteditable="true"],
 
       #console-panel {
         height: 200px; min-height: 80px; max-height: 50vh; background: var(--omega-bg);
-        border-top: 1px solid var(--omega-elevated); display: flex; flex-direction: column; flex-shrink: 0;
+        border: 1px solid var(--omega-border); display: flex; flex-direction: column; flex-shrink: 0;
         position: relative; z-index: 24;
       }
 
@@ -410,7 +434,7 @@ input, textarea, select, [contenteditable="true"],
 		--pine-reference-font-size: var(--font-size-base);
         width: 320px; min-width: 250px; max-width: 60%; height: 100%;
         flex: 0 0 auto; display: flex; flex-direction: column; background: var(--omega-surface);
-        border: 0; color: var(--omega-text);
+        border: 1px solid var(--omega-border); color: var(--omega-text);
       }
       .pine-reference-heading, .pine-ai-heading {
         min-height: 42px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-md);
@@ -458,7 +482,7 @@ input, textarea, select, [contenteditable="true"],
       #pine-ai-assistant {
         width: 520px; min-width: 400px; max-width: 65%; height: 100%; padding: 0 var(--space-md) var(--space-md);
         flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--space-md); overflow: hidden; color: var(--omega-text);
-        background: var(--omega-surface); border-left: 1px solid var(--omega-border);
+        background: var(--omega-surface); border: 1px solid var(--omega-border);
       }
       #pine-ai-assistant .pine-ai-heading { position: relative; z-index: 3; flex: 0 0 auto; margin: 0 calc(-1 * var(--space-md)); padding: var(--space-md) var(--space-md); background: var(--omega-surface); }
       #pine-ai-conversation-title { margin: var(--space-xs) 0 0; color: var(--omega-muted); font-size: var(--font-size-sm); }
@@ -527,6 +551,11 @@ input, textarea, select, [contenteditable="true"],
         flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px;
         border: 1px solid var(--omega-border); border-radius: 10px; background: var(--omega-bg);
       }
+      #pine-ai-luxalgo-option {
+        display: flex; align-items: center; gap: var(--space-sm); color: var(--omega-muted);
+        font-size: var(--font-size-base); cursor: pointer;
+      }
+      #pine-ai-luxalgo-enabled { accent-color: var(--omega-accent); }
       #pine-ai-prompt {
         flex: 1 1 auto; min-width: 0; min-height: 54px; max-height: 180px; resize: vertical;
         padding: 8px; color: var(--omega-text); background: transparent; border: 0; outline: none;
@@ -792,9 +821,12 @@ input, textarea, select, [contenteditable="true"],
       #top-toolbar .dock-pill { color: var(--omega-text); font-weight: 600; gap: var(--space-md); }
       .platform-zoom-controls { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
       .connection-latency { color: var(--omega-muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .trading-account-status { display:grid; gap:1px; min-width:0; max-width:210px; padding:3px 7px; border-left:3px solid var(--omega-warning); color:var(--omega-text); font-variant-numeric:tabular-nums; line-height:1.15; }
+      .trading-account-status { display:flex; align-items:center; gap:7px; margin-left:auto; min-width:0; max-width:360px; padding:3px 7px; border-left:3px solid var(--omega-warning); color:var(--omega-text); font-variant-numeric:tabular-nums; line-height:1.15; }
+      .trading-account-label { color:var(--omega-muted); font-size:10px; white-space:nowrap; }
+      .trading-account-status select { min-width:142px; max-width:195px; background:var(--omega-elevated); border:1px solid var(--omega-border); border-radius:4px; color:var(--omega-text); padding:3px 5px; font-size:11px; font-weight:600; cursor:pointer; }
+      .trading-account-summary { display:grid; gap:1px; min-width:0; }
       .trading-account-status strong { color:var(--omega-warning); font-size:10px; letter-spacing:.04em; }
-      .trading-account-status span { overflow:hidden; color:var(--omega-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+      .trading-account-status .trading-account-summary > span { overflow:hidden; color:var(--omega-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
       .connection-latency[data-quality="good"] { color: var(--omega-success); }
       .connection-latency[data-quality="warning"] { color: var(--omega-warning); }
       .connection-latency[data-quality="poor"] { color: var(--omega-error); }
@@ -1704,29 +1736,75 @@ body:not([data-theme="light"]) .vela-workspace .vela-bb-settings:hover {
   display: none;
 }
 
+.vela-workspace .vela-widget-panels .vela-widget-tool,
+button[class*="vela-widget-panel-"],
 .omega-trade-launcher {
-  width: 30px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: auto;
+  min-width: 0;
   height: 30px;
-  padding: 5px !important;
-  display: inline-grid !important;
-  place-items: center;
-  color: var(--omega-text, #f1f5f9) !important;
-  background: var(--omega-elevated, #1e222d) !important;
-  border-color: var(--omega-border, #2a2e39) !important;
+  padding: 0 9px !important;
+  border: 1px solid var(--omega-border) !important;
+  border-radius: var(--radius-md);
+  background: var(--omega-elevated) !important;
+  color: var(--omega-text) !important;
+  white-space: nowrap;
+}
+
+.omega-panel-button-label {
+  display: inline-block;
+  max-width: 148px;
+  overflow: hidden;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool .vela-icon,
+button[class*="vela-widget-panel-"] .vela-icon {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool:hover,
+button[class*="vela-widget-panel-"]:hover,
+.omega-trade-launcher:hover {
+  border-color: var(--omega-accent) !important;
+  background: color-mix(in srgb, var(--omega-accent) 12%, var(--omega-elevated)) !important;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool[data-active="1"],
+button[class*="vela-widget-panel-"][data-active="1"],
+.omega-trade-launcher.active {
+  border-color: var(--omega-accent) !important;
+  background: color-mix(in srgb, var(--omega-accent) 20%, var(--omega-elevated)) !important;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool:focus-visible,
+button[class*="vela-widget-panel-"]:focus-visible,
+.omega-trade-launcher:focus-visible {
+  outline: 2px solid var(--omega-accent);
+  outline-offset: 2px;
+}
+
+.omega-trade-launcher {
+  color: var(--omega-muted, #94a3b8) !important;
   box-shadow: none;
-  outline: none !important;
 }
 .omega-trade-launcher:hover,
 .omega-trade-launcher:focus,
-.omega-trade-launcher:focus-visible,
-.omega-trade-launcher.active {
+.omega-trade-launcher:focus-visible {
   color: var(--omega-text, #f1f5f9) !important;
-  background: var(--omega-elevated, #1e222d) !important;
-  border-color: var(--omega-border, #2a2e39) !important;
   box-shadow: none !important;
 }
 .omega-trade-launcher.active {
-  outline: none !important;
+  color: var(--omega-text, #f1f5f9) !important;
 }
 .omega-trade-launcher svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; }
 body[data-theme="light"] #omega-top-right-pl {
@@ -1892,7 +1970,7 @@ body:not([data-theme="light"]) .omega-measure-sublabel {
   width: 320px;
   max-width: 90vw;
   background: var(--omega-surface);
-  border-left: 1px solid var(--omega-border);
+  border: 1px solid var(--omega-border);
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.35);
   z-index: 95;
   display: flex;

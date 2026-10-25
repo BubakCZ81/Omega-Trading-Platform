@@ -36,6 +36,10 @@ const scriptSelect = document.getElementById('script-select') as HTMLSelectEleme
 const status = document.getElementById('editor-status') as HTMLSpanElement;
 const editorHost = document.getElementById('code-editor') as HTMLDivElement;
 const reference = document.getElementById('pine-reference') as HTMLElement;
+const referenceResize = document.getElementById('pine-reference-resize') as HTMLElement;
+const referenceWidthKey = 'omega.pine-reference.standalone-width';
+const referenceMinWidth = 250;
+const referenceMaxRatio = 0.45;
 let autosaveTimer: number | undefined;
 
 function setStatus(message: string, isError = false): void {
@@ -96,6 +100,50 @@ editor.onDidChangeModelContent(() => {
 });
 refreshScriptSelect();
 
+const setReferenceWidth = (width: number) => {
+  const content = reference.parentElement;
+  if (!content) return;
+  const maxWidth = Math.max(referenceMinWidth, Math.min(content.clientWidth * referenceMaxRatio, content.clientWidth - 420));
+  const nextWidth = Math.round(Math.max(referenceMinWidth, Math.min(maxWidth, width)));
+  reference.style.width = `${nextWidth}px`;
+  referenceResize.setAttribute('aria-valuemax', String(Math.round(maxWidth)));
+  referenceResize.setAttribute('aria-valuenow', String(nextWidth));
+  localStorage.setItem(referenceWidthKey, String(nextWidth));
+  editor.layout();
+};
+
+const storedReferenceWidth = Number(localStorage.getItem(referenceWidthKey));
+if (Number.isFinite(storedReferenceWidth) && storedReferenceWidth >= referenceMinWidth) {
+  reference.style.width = `${storedReferenceWidth}px`;
+}
+setReferenceWidth(reference.clientWidth);
+referenceResize.addEventListener('pointerdown', event => {
+  if (reference.hidden) return;
+  event.preventDefault();
+  referenceResize.classList.add('dragging');
+  document.body.style.userSelect = 'none';
+  referenceResize.setPointerCapture(event.pointerId);
+});
+referenceResize.addEventListener('pointermove', event => {
+  if (!referenceResize.hasPointerCapture(event.pointerId)) return;
+  const content = reference.parentElement;
+  if (!content) return;
+  setReferenceWidth(content.getBoundingClientRect().right - event.clientX);
+});
+const stopReferenceResize = () => {
+  referenceResize.classList.remove('dragging');
+  document.body.style.userSelect = '';
+};
+referenceResize.addEventListener('pointerup', stopReferenceResize);
+referenceResize.addEventListener('pointercancel', stopReferenceResize);
+referenceResize.addEventListener('lostpointercapture', stopReferenceResize);
+referenceResize.addEventListener('keydown', event => {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  event.preventDefault();
+  const direction = event.key === 'ArrowLeft' ? 1 : -1;
+  setReferenceWidth(reference.clientWidth + direction * 24);
+});
+
 scriptSelect.addEventListener('change', () => selectScript(scriptSelect.value));
 document.getElementById('save-script')?.addEventListener('click', () => saveCurrent());
 document.getElementById('new-script')?.addEventListener('click', () => {
@@ -132,12 +180,14 @@ document.getElementById('export-script')?.addEventListener('click', async () => 
 });
 document.getElementById('toggle-reference')?.addEventListener('click', () => {
   reference.hidden = !reference.hidden;
+  referenceResize.hidden = reference.hidden;
   const button = document.getElementById('toggle-reference') as HTMLButtonElement;
   button.setAttribute('aria-expanded', String(!reference.hidden));
   editor.layout();
 });
 document.getElementById('close-reference')?.addEventListener('click', () => {
   reference.hidden = true;
+  referenceResize.hidden = true;
   (document.getElementById('toggle-reference') as HTMLButtonElement).setAttribute('aria-expanded', 'false');
   editor.layout();
 });

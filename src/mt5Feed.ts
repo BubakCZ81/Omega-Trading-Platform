@@ -443,19 +443,38 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
 
   const provider = window.velaMt5 ? new Mt5DataProvider(window.velaMt5) : null;
   let connected = false;
+  let revision = 0;
   let loadedSymbols: Mt5Symbol[] = [];
+  let tradingAccountId: string | null = null;
   const setStatus = (message: string, isError = false) => {
     status.textContent = message;
     status.dataset.state = isError ? 'error' : 'info';
   };
-  const registerProvider = async (chart: VelaWorkspace['chart']) => {
-    if (!provider) return;
+  const deactivate = () => {
+    const wasConnected = connected;
+    connected = false;
+    revision += 1;
+    loadedSymbols = [];
+    provider?.disconnect();
+    for (const cell of getWorkspace().cells()) cell.chart.data.unregisterProvider('mt5');
+    if (tradingAccountId) {
+      document.dispatchEvent(new CustomEvent('omega:trading-account-unavailable', { detail: tradingAccountId }));
+    }
+    tradingAccountId = null;
+    connectButton.hidden = false;
+    disconnectButton.hidden = true;
+    renderSymbols();
+    if (wasConnected) setStatus('MetaTrader data feed stopped because another provider is being connected.');
+  };
+  const registerProvider = async (chart: VelaWorkspace['chart'], expectedRevision: number) => {
+    if (!provider || !connected || expectedRevision !== revision) return;
     chart.data.registerProvider('mt5', provider);
     await chart.data.ready();
+    if (!connected || expectedRevision !== revision) chart.data.unregisterProvider('mt5');
   };
-  const registerWorkspace = async () => {
+  const registerWorkspace = async (expectedRevision: number) => {
     const workspace = getWorkspace();
-    await Promise.all(workspace.cells().map(cell => registerProvider(cell.chart)));
+    await Promise.all(workspace.cells().map(cell => registerProvider(cell.chart, expectedRevision)));
   };
   const renderSymbols = () => {
     const query = symbolSearch.value.trim().toLowerCase();
@@ -506,10 +525,14 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
   getWorkspace().on('cell:created', event => {
     if (!connected) return;
     const cell = getWorkspace().cell(event.id);
-    if (cell) void registerProvider(cell.chart).catch(error => {
+    if (cell) void registerProvider(cell.chart, revision).catch(error => {
       console.error('Could not register the MetaTrader provider on a new chart:', error);
       setStatus(error instanceof Error ? error.message : String(error), true);
     });
+  });
+  document.addEventListener('omega:trading-broker-connecting', deactivate);
+  document.addEventListener('omega:trading-broker-connected', event => {
+    if ((event as CustomEvent<string>).detail !== 'mt5') deactivate();
   });
 
   openButton.addEventListener('click', () => {
@@ -529,26 +552,43 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
   connectButton.addEventListener('click', async () => {
     if (!window.velaMt5 || !provider) return;
     connectButton.disabled = true;
+    document.dispatchEvent(new CustomEvent('omega:trading-broker-connecting', { detail: 'mt5' }));
+    const attemptRevision = revision;
     setStatus('Connecting to the MetaTrader 5 terminal…');
     try {
       const connection = await window.velaMt5.connect(executableInput?.value.trim() || undefined);
+      if (attemptRevision !== revision) return;
       loadedSymbols = connection.symbols;
       provider.setSymbols(connection.symbols);
       connected = true;
-      await registerWorkspace();
+      const connectedRevision = ++revision;
+      await registerWorkspace(connectedRevision);
+      if (connectedRevision !== revision) return;
+      tradingAccountId = `mt5:${connection.server || connection.terminal || 'terminal'}`;
+      document.dispatchEvent(new CustomEvent('omega:trading-account-available', {
+        detail: {
+          id: tradingAccountId,
+          label: `MT5 · ${connection.server || connection.company || 'Terminal'}`,
+          mode: 'CONNECTED',
+          detail: 'MT5 market data · read-only',
+        },
+      }));
       connectButton.hidden = true;
       disconnectButton.hidden = false;
+      document.dispatchEvent(new CustomEvent('omega:trading-broker-connected', { detail: 'mt5' }));
       const sourceStatus = connection.symbols.length
         ? `${connection.symbols.length} Pepperstone symbols loaded, including ${connection.symbols.slice(0, 5).map(symbol => symbol.ticker).join(', ')}.`
         : 'The terminal returned zero symbols. In MT5 open View > Symbols, enable instruments, then press Refresh.';
       setStatus(`Connected to ${connection.company || connection.terminal}${connection.server ? ` (${connection.server})` : ''}. ${sourceStatus} You can select one from the MT5 list below or search MT5:SYMBOL in the chart picker.`, connection.symbols.length === 0);
       renderSymbols();
     } catch (error) {
+      if (attemptRevision !== revision) return;
       connected = false;
       loadedSymbols = [];
       provider.disconnect();
       for (const cell of getWorkspace().cells()) cell.chart.data.unregisterProvider('mt5');
       setStatus(error instanceof Error ? error.message : String(error), true);
+      renderSymbols();
     } finally {
       connectButton.disabled = false;
     }
@@ -559,11 +599,9 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
     disconnectButton.disabled = true;
     try {
       for (const cell of getWorkspace().cells()) cell.chart.data.unregisterProvider('mt5');
-      provider?.disconnect();
       await window.velaMt5.disconnect();
-      connected = false;
-      connectButton.hidden = false;
-      disconnectButton.hidden = true;
+      deactivate();
+      document.dispatchEvent(new CustomEvent('omega:trading-broker-disconnected', { detail: 'mt5' }));
       setStatus('MetaTrader data feed disconnected. The chart provider is no longer registered.');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), true);
@@ -578,14 +616,19 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
       return;
     }
     refreshSymbolsButton.disabled = true;
+    const expectedRevision = revision;
     try {
       loadedSymbols = await window.velaMt5.symbols();
+      if (expectedRevision !== revision || !connected) return;
       provider?.setSymbols(loadedSymbols);
-      await registerWorkspace();
+      await registerWorkspace(expectedRevision);
+      if (expectedRevision !== revision || !connected) return;
       renderSymbols();
       setStatus(`${loadedSymbols.length} Pepperstone symbols loaded from the MT5 terminal.`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error), true);
+      if (expectedRevision === revision) {
+        setStatus(error instanceof Error ? error.message : String(error), true);
+      }
     } finally {
       refreshSymbolsButton.disabled = false;
     }
