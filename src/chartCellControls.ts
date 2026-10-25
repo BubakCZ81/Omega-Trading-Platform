@@ -98,6 +98,12 @@ export class ChartCellControlsManager {
         && !this.activePopup.contains(event.target as Node)) {
         this.closePopup();
       }
+      // Keep top-toolbar menus from obscuring the chart after the trader returns
+      // to it. Capture phase is required because Vela can stop pointer bubbling.
+      const timeframeMenu = document.getElementById('ctrader-timeframe-menu') as HTMLDetailsElement | null;
+      if (timeframeMenu?.open && !timeframeMenu.contains(event.target as Node)) {
+        timeframeMenu.open = false;
+      }
       workspace.setActiveCell(cellId);
       this.updateAll();
     };

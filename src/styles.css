@@ -852,7 +852,7 @@ input, textarea, select, [contenteditable="true"],
       }
       .timeframe-menu summary::-webkit-details-marker { display: none; }
       .timeframe-menu summary::after { content: ' ▾'; color: #9ca3af; }
-      .timeframe-menu:is([open], [data-active="true"]) > summary {
+      .timeframe-menu[open] > summary {
         border-color: var(--omega-accent);
         background-color: color-mix(in srgb, var(--omega-accent) 20%, var(--omega-elevated));
         color: var(--omega-text);
@@ -1492,7 +1492,7 @@ input, textarea, select, [contenteditable="true"],
       #top-toolbar .btn:hover,
       #top-toolbar .chart-toolbar-input:hover,
       #top-toolbar .timeframe-menu summary:hover { border-color: var(--omega-accent); }
-      #top-toolbar .timeframe-menu:is([open], [data-active="true"]) > summary {
+      #top-toolbar .timeframe-menu[open] > summary {
         border-color: var(--omega-accent);
         background-color: color-mix(in srgb, var(--omega-accent) 20%, var(--omega-elevated));
         color: var(--omega-text);

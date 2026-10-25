@@ -1644,7 +1644,6 @@ const ctraderTimeframeMenu = document.getElementById('ctrader-timeframe-menu') a
 const ctraderTimeframeGrid = document.getElementById('ctrader-timeframe-grid') as HTMLElement;
 function syncChartControls() {
   const timeframe = workspace.chart.market.timeframe ?? '60';
-  ctraderTimeframeMenu.dataset.active = 'true';
   customTimeframeMenu.querySelector('summary')!.textContent = formatTimeframeLabel(timeframe);
   syncTimeframeInput(timeframe);
   const style = workspace.chart.renderer.get('priceStyle');
