@@ -20,6 +20,7 @@ import {
   type ProtectionMode,
 } from './paperTradeMath';
 import { calculatePaperAccount, type PaperLedgerTrade } from './paperTradingAnalytics';
+import { createSingleFlightGate } from './singleFlight';
 
 const STORAGE_KEY = 'omega-paper-trades-v1';
 const PENDING_STORAGE_KEY = 'omega-paper-pending-orders-v1';
@@ -180,6 +181,7 @@ interface ChartState {
 const chartStates = new Map<string, ChartState>();
 const trades = new Map<string, PaperTrade>();
 const brokerChartPositions = new Map<string, BrokerChartPosition>();
+const tradeCreationGate = createSingleFlightGate();
 let overlayRenderFrame: number | null = null;
 const restoredCells = new Set<string>();
 let savedTrades: PaperTrade[] = [];
@@ -193,7 +195,6 @@ let pendingCloseTradeId: string | null = null;
 let pendingTradeAction: TradeOverlayAction = 'close';
 let pendingOrderContext: ChartState | null = null;
 let pendingModalInitialized = false;
-let tradeCreationPending = false;
 let refreshPendingProtectionPreview: (() => void) | null = null;
 let previousFocus: HTMLElement | null = null;
 let tradeClickAudioContext: AudioContext | null = null;
@@ -682,7 +683,7 @@ function initializePendingOrderModal(): void {
   const preview = document.getElementById('paper-pending-order-protection-preview');
   if (!modal || !form || !closeButton || !cancelButton || !sideField || !entryField || !protectionMode || !stopField || !targetField || !lotsField || !message || !submitButton) return;
   pendingModalInitialized = true;
-  let submissionInProgress = false;
+  const submissionGate = createSingleFlightGate();
 
   const close = () => hidePendingOrderModal();
   closeButton.addEventListener('click', close);
@@ -722,7 +723,6 @@ function initializePendingOrderModal(): void {
   targetField.addEventListener('input', updateProtectionPreview);
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    if (submissionInProgress) return;
     const state = pendingOrderContext;
     if (!state) return;
     const symbol = state.chart.market.symbol;
@@ -755,7 +755,8 @@ function initializePendingOrderModal(): void {
       return;
     }
 
-    submissionInProgress = true;
+    const releaseSubmission = submissionGate.acquire();
+    if (!releaseSubmission) return;
     submitButton.disabled = true;
     message.textContent = 'Validating symbol details…';
     delete message.dataset.state;
@@ -803,7 +804,7 @@ function initializePendingOrderModal(): void {
       message.textContent = error instanceof Error ? error.message : String(error);
       message.dataset.state = 'error';
     } finally {
-      submissionInProgress = false;
+      releaseSubmission();
       submitButton.disabled = false;
     }
   });
@@ -1601,7 +1602,6 @@ function reverseTrade(trade: PaperTrade, state: ChartState): void {
 }
 
 async function openTrade(state: ChartState, side: PaperTradeSide): Promise<void> {
-  if (tradeCreationPending) return;
   const lots = Number(lotsInput.value);
   if (!Number.isFinite(lots) || lots < 0.01) {
     lotsInput.setAttribute('aria-invalid', 'true');
@@ -1631,7 +1631,8 @@ async function openTrade(state: ChartState, side: PaperTradeSide): Promise<void>
     return;
   }
 
-  tradeCreationPending = true;
+  const releaseTradeCreation = tradeCreationGate.acquire();
+  if (!releaseTradeCreation) return;
   buyButton.disabled = true;
   sellButton.disabled = true;
   setStatus('Creating paper trade...');
@@ -1685,7 +1686,7 @@ async function openTrade(state: ChartState, side: PaperTradeSide): Promise<void>
     console.error('Could not create paper trade:', error);
     setStatus(`Could not create paper trade: ${message}`, 'error');
   } finally {
-    tradeCreationPending = false;
+    releaseTradeCreation();
     buyButton.disabled = false;
     sellButton.disabled = false;
   }
