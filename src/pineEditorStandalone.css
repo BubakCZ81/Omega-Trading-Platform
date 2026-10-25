@@ -1,0 +1,21 @@
+@import './styles.css';
+
+.pine-editor-window { height: 100vh; display: flex; flex-direction: column; background: var(--omega-bg); }
+.pine-editor-toolbar { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); padding: var(--space-sm) var(--space-md); background: var(--omega-surface); border-bottom: 1px solid var(--omega-border); }
+.pine-editor-toolbar-group { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
+.pine-editor-toolbar strong { font-size: var(--font-size-sm); letter-spacing: .04em; white-space: nowrap; }
+.pine-editor-toolbar strong span { color: var(--omega-muted); }
+.pine-editor-toolbar button, .pine-editor-toolbar select, .pine-reference-heading button { color: var(--omega-text); background: var(--omega-elevated); border: 1px solid var(--omega-border); border-radius: var(--radius-md); padding: 5px 8px; font: inherit; cursor: pointer; }
+.pine-editor-toolbar button:hover, .pine-reference-heading button:hover { border-color: var(--omega-accent); color: var(--omega-accent-hover); }
+.pine-editor-toolbar select { max-width: 240px; }
+.pine-editor-actions { justify-content: flex-end; }
+#editor-status { max-width: 260px; color: var(--omega-muted); font-size: var(--font-size-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#editor-status[data-state="error"] { color: var(--omega-error); }
+.pine-editor-content { min-height: 0; flex: 1; display: flex; overflow: hidden; }
+#code-editor { min-width: 0; flex: 1; }
+#pine-reference { --pine-reference-font-size: var(--font-size-base); width: 320px; min-width: 250px; max-width: 45%; height: 100%; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--omega-surface); border-left: 1px solid var(--omega-border); color: var(--omega-text); }
+#pine-reference[hidden] { display: none; }
+.pine-reference-heading { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); padding: var(--space-md); border-bottom: 1px solid var(--omega-border); }
+#pine-reference-search { margin: var(--space-md); padding: var(--space-md); color: var(--omega-text); background: var(--omega-bg); border: 1px solid var(--omega-border); border-radius: var(--radius-md); }
+#pine-reference-list { overflow: auto; padding: 0 var(--space-md) var(--space-md); }
+@media (max-width: 900px) { .pine-editor-toolbar { align-items: flex-start; flex-direction: column; } .pine-editor-actions { justify-content: flex-start; } #pine-reference { width: 230px; min-width: 180px; } }
