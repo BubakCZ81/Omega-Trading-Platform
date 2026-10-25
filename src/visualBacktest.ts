@@ -1,6 +1,7 @@
 import './visualBacktest.css';
 import { calculateBacktestAnalytics, type BacktestAnalytics } from './backtestStats';
-import type { OHLCV, StrategyState, StrategyTrade } from '@luxalgo/vela';
+import type { DataProvider, OHLCV, StrategyState, StrategyTrade } from '@luxalgo/vela';
+import { BACKTEST_PROVIDER_PREFIX, BacktestHistoryProvider, loadBacktestHistory } from './backtestHistory';
 
 type VisualChartCell = {
   id: string;
@@ -10,10 +11,13 @@ type VisualChartCell = {
     data: {
       providers: () => Array<{ name: string; displayName?: string }>;
       resolve: (symbol: string) => { provider?: string; ticker?: string } | null;
-      providerInstance: (name: string) => { getBars: (ticker: string, timeframe: string, range: { from: number; to: number; limit: number }) => Promise<OHLCV[]> } | undefined;
+      providerInstance: (name: string) => DataProvider | undefined;
+      registerProvider: (name: string, provider: DataProvider) => unknown;
+      unregisterProvider: (name: string) => unknown;
+      ready: () => Promise<void>;
     };
     replay: { bounds?: { first: number; last: number } | null };
-    setMarket: (market: { symbol?: string; timeframe?: string; data?: OHLCV[]; visibleRange?: { from: number; to: number } }) => Promise<void>;
+    setMarket: (market: { symbol?: string; timeframe?: string; bars?: number; data?: OHLCV[]; visibleRange?: { from: number; to: number } }) => Promise<void>;
     historyComplete: () => Promise<void>;
     indicators: () => Array<VisualStrategyHandle>;
   };
@@ -134,6 +138,8 @@ export function initializeVisualBacktest(
   let replayEndTime: number | null = null;
   let renderRevision = 0;
   let startRevision = 0;
+  let backtestProviderRevision = 0;
+  let activeBacktestProviderName: string | null = null;
 
   const selectActiveStrategy = (): VisualStrategyHandle | null => testCell?.chart.indicators().find(item => item.id === strategySelect.value) ?? null;
 
@@ -231,6 +237,7 @@ export function initializeVisualBacktest(
     feed.replaceChildren(new Option('Auto', ''));
     const providers = chart.chart.data.providers();
     for (const provider of providers) {
+      if (provider.name.toLowerCase().startsWith(`${BACKTEST_PROVIDER_PREFIX}_`)) continue;
       feed.add(new Option(provider.displayName ?? provider.name, provider.name.toLowerCase()));
     }
     if (providers.some(provider => provider.name.toLowerCase() === selected)) feed.value = selected;
@@ -310,53 +317,39 @@ export function initializeVisualBacktest(
       }
       const provider = testCell.chart.data.providerInstance(resolved.provider);
       if (!provider) throw new Error(`The ${resolved.provider} data provider is unavailable.`);
-      const sdkTimeframes: Record<string, '1m' | '5m' | '15m' | '1h' | '1d'> = {
-        '1': '1m',
-        '5': '5m',
-        '15': '15m',
-        '60': '1h',
-        D: '1d',
-        '1D': '1d',
-      };
-      const sdkTimeframe = feed.value.toLowerCase() === 'alpaca' ? sdkTimeframes[timeframe.value] : undefined;
-      let usedFeedFallback = false;
-      let sdkBars: OHLCV[] | null = null;
-      if (sdkTimeframe && window.velaBroker) {
-        try {
-          sdkBars = await window.velaBroker.fetchHistoricalBars({
-            symbol: resolved.ticker,
-            timeframe: sdkTimeframe,
-            from: startTime,
-            to: endTime,
-            limit: 10_000,
-          });
-        } catch (error) {
-          const missingHandler = error instanceof Error
-            && error.message.includes("No handler registered for 'broker:fetch-bars'");
-          if (!missingHandler) throw error;
-          usedFeedFallback = true;
-        }
-      }
-      const bars = sdkBars ?? await provider.getBars(resolved.ticker, timeframe.value, {
-        from: startTime,
-        to: endTime,
-        limit: 50_000,
-      });
+      const bars = await loadBacktestHistory(
+        provider,
+        resolved.ticker,
+        timeframe.value,
+        startTime,
+        endTime,
+        () => requestRevision === startRevision,
+      );
       if (requestRevision !== startRevision) return;
-      if (!bars.length) {
-        throw new Error(`Alpaca returned no candles for ${ticker} in the selected period. Check the symbol, date range, and historical-data access for this account.`);
+      if (!bars?.length) {
+        throw new Error(`No candles were returned for ${ticker} in the selected period. Check the feed, symbol, date range, and historical-data access.`);
       }
+      const previousProviderName = activeBacktestProviderName;
+      const backtestProviderName = `${BACKTEST_PROVIDER_PREFIX}_${++backtestProviderRevision}`;
+      testCell.chart.data.registerProvider(backtestProviderName, new BacktestHistoryProvider(provider, backtestProviderName, bars));
+      await testCell.chart.data.ready();
+      if (requestRevision !== startRevision) return;
+      const backtestSymbol = `${backtestProviderName}:${resolved.ticker}`;
       await testCell.chart.setMarket({
-        symbol: marketSymbol,
+        symbol: backtestSymbol,
         timeframe: timeframe.value,
-        data: bars,
-        visibleRange: { from: startTime, to: endTime },
+        bars: bars.length,
       });
       if (requestRevision !== startRevision) return;
+      await testCell.chart.historyComplete();
+      if (requestRevision !== startRevision) return;
+      await testCell.chart.setMarket({ visibleRange: { from: startTime, to: endTime } });
       const bounds = testCell.chart.replay.bounds;
       if (!bounds || startTime > bounds.last) {
         throw new Error(`Loaded ${bars.length.toLocaleString()} candles, but none fall inside the selected period.`);
       }
+      if (previousProviderName) testCell.chart.data.unregisterProvider(previousProviderName);
+      activeBacktestProviderName = backtestProviderName;
       replayEndTime = Math.min(endTime, bounds.last);
       await workspace.replay.start({ from: startTime, cell: testCell.id });
       if (requestRevision !== startRevision) {
@@ -366,9 +359,7 @@ export function initializeVisualBacktest(
       if (!workspace.replay.state.active) {
         throw new Error('The selected period has no replayable historical candles.');
       }
-      status.textContent = usedFeedFallback
-        ? `Broker SDK history is unavailable in this app session; loaded ${bars.length.toLocaleString()} candles through the connected Alpaca feed. Press Play to begin visual playback.`
-        : `Loaded ${bars.length.toLocaleString()} historical candles. Press Play to begin visual playback.`;
+      status.textContent = `Loaded ${bars.length.toLocaleString()} historical candles. Press Play to begin visual playback.`;
     } catch (error) {
       if (requestRevision === startRevision) {
         status.textContent = `Could not start Visual Backtest: ${error instanceof Error ? error.message : String(error)}`;

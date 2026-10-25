@@ -1995,6 +1995,7 @@ const loadedBarListeners = new Map<string, Array<() => void>>();
 const loadedBarCounts = new Map<string, { loaded: number; target: number }>();
 const loadedBarsLabel = document.getElementById('bottom-loaded-bars');
 const barCountFormatter = new Intl.NumberFormat();
+const maxAutomaticHistoryBars = 50_000;
 
 function renderLoadedBarCount(): void {
   if (!loadedBarsLabel) return;
@@ -2029,11 +2030,46 @@ function watchCellLoadedBars(cellId: string): void {
   const cell = workspace.cell(cellId);
   if (!cell) return;
   const target = Math.max(0, Number(cell.chart.market.bars) || 0);
+  let extendingHistory = false;
+  let lastExtensionBoundary = '';
+  let currentViewport: { from: number; to: number } | null = null;
+  const maybeExtendHistory = (range: { from: number; to: number }) => {
+    const market = cell.chart.market;
+    const oldest = cell.chart.replay.bounds?.first;
+    if (market.offline || !market.symbol || !market.timeframe || oldest === undefined || extendingHistory) return;
+    const interval = timeframeToMs(market.timeframe);
+    const visibleWidth = Math.max(0, range.to - range.from);
+    const preloadMargin = Math.max(interval * 5, visibleWidth * 0.15);
+    if (range.from > oldest + preloadMargin) return;
+    const boundary = `${market.symbol}|${market.timeframe}|${oldest}`;
+    if (boundary === lastExtensionBoundary) return;
+    const loaded = loadedBarCounts.get(cellId)?.loaded ?? 0;
+    const requested = Math.max(1, Number(market.bars) || 500);
+    const nextTarget = Math.min(maxAutomaticHistoryBars, Math.max(requested + 500, loaded + 500));
+    if (nextTarget <= requested) return;
+    lastExtensionBoundary = boundary;
+    extendingHistory = true;
+    setLoadedBarCount(cellId, loaded, nextTarget);
+    void cell.chart.setMarket({ bars: nextTarget })
+      .then(() => cell.chart.historyComplete())
+      .catch(error => {
+        console.error(`Could not load older chart history for ${market.symbol}:`, error);
+      })
+      .finally(() => {
+        extendingHistory = false;
+        if (currentViewport) maybeExtendHistory(currentViewport);
+      });
+  };
   setLoadedBarCount(cellId, 0, target);
   loadedBarListeners.set(cellId, [
     cell.chart.on('load:end', event => setLoadedBarCount(cellId, event.bars, Number(cell.chart.market.bars) || event.bars)),
     cell.chart.on('history:progress', event => setLoadedBarCount(cellId, event.loaded, event.target)),
     cell.chart.on('history:complete', event => setLoadedBarCount(cellId, event.barsLoaded, Number(cell.chart.market.bars) || event.barsLoaded)),
+    cell.chart.on('market:changed', () => { lastExtensionBoundary = ''; }),
+    cell.chart.on('viewport:changed', range => {
+      currentViewport = range;
+      maybeExtendHistory(range);
+    }),
   ]);
 }
 

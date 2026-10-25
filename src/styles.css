@@ -210,7 +210,8 @@ input, textarea, select, [contenteditable="true"],
       .chart-tab-add:hover:not(:disabled) { color: var(--omega-text); background: var(--omega-border); border-color: var(--omega-accent); }
       .chart-tab-add:disabled { opacity: .45; cursor: not-allowed; }
       #chart-grid.omega-tabs-mode .vela-cell { visibility: hidden; pointer-events: none; z-index: 0 !important; }
-      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] { visibility: visible; pointer-events: auto; z-index: 10 !important; }
+      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] { visibility: visible; pointer-events: auto; z-index: 10 !important; isolation: isolate; }
+      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] .vela-ui-layer { visibility: visible; pointer-events: auto; z-index: 1000000 !important; }
       
       /* Chart cells in workspace */
       .vela-cell {

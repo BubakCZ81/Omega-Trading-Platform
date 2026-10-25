@@ -18,7 +18,7 @@
     "test:local-ai": "node --test electron/local-ai.test.cjs",
     "test:modules": "node --experimental-strip-types --test src/featureModules.test.mjs",
     "test:vela-dismissal": "node --test scripts/velaDismissalPatch.test.mjs",
-    "test:backtest": "node --experimental-strip-types --test src/backtestStats.test.mjs src/paperTradingAnalytics.test.mjs",
+    "test:backtest": "node --experimental-strip-types --test src/backtestStats.test.mjs src/backtestHistory.test.mjs src/paperTradingAnalytics.test.mjs",
     "test:news": "node --test electron/news.test.cjs",
     "test:pine-converter": "node --test src/pineVersionConverter.test.mjs",
     "test:app-paths": "node --experimental-strip-types --test src/appPaths.test.mjs",
