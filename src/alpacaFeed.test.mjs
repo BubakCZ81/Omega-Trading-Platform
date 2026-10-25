@@ -43,8 +43,28 @@ test('uses the Broker SDK date-range API and restricts unsupported timeframes', 
   assert.equal(request.symbol, 'AAPL');
   assert.equal(request.limit, 10);
   assert.ok(request.to >= now);
-  assert.equal(request.from, request.to - 10 * 24 * 60 * 60_000);
+  assert.equal(request.from, request.to - Math.ceil(10 * 24 * 60 * 60_000 * 1.5) - 14 * 24 * 60 * 60_000);
   await assert.rejects(provider.getBars('AAPL', '2D', { limit: 10 }), /Broker SDK does not support/);
+});
+
+test('extends default minute history across market closures but preserves explicit ranges', async () => {
+  const requests = [];
+  const provider = new AlpacaDataProvider({
+    fetchHistoricalBars: async request => {
+      requests.push(request);
+      return [];
+    },
+  });
+  provider.setConnected(true);
+  const to = Date.UTC(2026, 9, 25, 21);
+
+  await provider.getBars('AAPL', '1', { to, limit: 500 });
+  await provider.getBars('AAPL', '5', { to, limit: 500 });
+  await provider.getBars('AAPL', '5', { from: to - 10 * 60_000, to, limit: 3 });
+
+  assert.equal(requests[0].from, to - 500 * 60_000 * 6 - 3 * 24 * 60 * 60_000);
+  assert.equal(requests[1].from, to - 500 * 5 * 60_000 * 6 - 3 * 24 * 60 * 60_000);
+  assert.equal(requests[2].from, to - 10 * 60_000);
 });
 
 test('returns minute bars from the Broker SDK unchanged', async () => {

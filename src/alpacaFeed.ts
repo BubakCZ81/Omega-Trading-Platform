@@ -63,6 +63,11 @@ const timeframeMilliseconds: Record<string, number> = {
   '1d': 24 * 60 * 60_000,
 };
 
+const intradayLookbackMultiplier = 6;
+const intradayMarketClosureBuffer = 3 * 24 * 60 * 60_000;
+const dailyLookbackMultiplier = 1.5;
+const dailyMarketClosureBuffer = 14 * 24 * 60 * 60_000;
+
 function normalizeTicker(ticker: string): string {
   return ticker.replace(/^alpaca:/i, '').trim().toUpperCase();
 }
@@ -100,7 +105,9 @@ export class AlpacaDataProvider implements DataProvider {
     const limit = Math.max(1, Math.min(10_000, Math.floor(range.limit ?? 1000)));
     const interval = timeframeMilliseconds[sdkTimeframe];
     const to = range.to ?? Date.now();
-    const from = range.from ?? to - limit * interval;
+    const lookbackMultiplier = sdkTimeframe === '1d' ? dailyLookbackMultiplier : intradayLookbackMultiplier;
+    const marketClosureBuffer = sdkTimeframe === '1d' ? dailyMarketClosureBuffer : intradayMarketClosureBuffer;
+    const from = range.from ?? to - Math.ceil(limit * interval * lookbackMultiplier) - marketClosureBuffer;
     const bars = await this.bridge.fetchHistoricalBars({
       symbol: normalizeTicker(ticker),
       timeframe: sdkTimeframe,
