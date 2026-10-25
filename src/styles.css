@@ -1736,31 +1736,75 @@ body:not([data-theme="light"]) .vela-workspace .vela-bb-settings:hover {
   display: none;
 }
 
+.vela-workspace .vela-widget-panels .vela-widget-tool,
+button[class*="vela-widget-panel-"],
 .omega-trade-launcher {
-  width: 30px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: auto;
+  min-width: 0;
   height: 30px;
-  padding: 5px !important;
-  display: inline-grid !important;
-  place-items: center;
+  padding: 0 9px !important;
+  border: 1px solid var(--omega-border) !important;
+  border-radius: var(--radius-md);
+  background: var(--omega-elevated) !important;
+  color: var(--omega-text) !important;
+  white-space: nowrap;
+}
+
+.omega-panel-button-label {
+  display: inline-block;
+  max-width: 148px;
+  overflow: hidden;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool .vela-icon,
+button[class*="vela-widget-panel-"] .vela-icon {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool:hover,
+button[class*="vela-widget-panel-"]:hover,
+.omega-trade-launcher:hover {
+  border-color: var(--omega-accent) !important;
+  background: color-mix(in srgb, var(--omega-accent) 12%, var(--omega-elevated)) !important;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool[data-active="1"],
+button[class*="vela-widget-panel-"][data-active="1"],
+.omega-trade-launcher.active {
+  border-color: var(--omega-accent) !important;
+  background: color-mix(in srgb, var(--omega-accent) 20%, var(--omega-elevated)) !important;
+}
+
+.vela-workspace .vela-widget-panels .vela-widget-tool:focus-visible,
+button[class*="vela-widget-panel-"]:focus-visible,
+.omega-trade-launcher:focus-visible {
+  outline: 2px solid var(--omega-accent);
+  outline-offset: 2px;
+}
+
+.omega-trade-launcher {
   color: var(--omega-muted, #94a3b8) !important;
-  background: transparent !important;
-  border-color: transparent !important;
   box-shadow: none;
-  outline: none !important;
 }
 .omega-trade-launcher:hover,
 .omega-trade-launcher:focus,
 .omega-trade-launcher:focus-visible {
   color: var(--omega-text, #f1f5f9) !important;
-  background: var(--omega-elevated, #1e222d) !important;
-  border-color: var(--omega-border, #2a2e39) !important;
   box-shadow: none !important;
 }
 .omega-trade-launcher.active {
   color: var(--omega-text, #f1f5f9) !important;
-  background: color-mix(in srgb, var(--omega-accent) 18%, var(--omega-elevated, #1e222d)) !important;
-  border-color: var(--omega-accent, #3b82f6) !important;
-  outline: none !important;
 }
 .omega-trade-launcher svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; }
 body[data-theme="light"] #omega-top-right-pl {

@@ -927,6 +927,20 @@ function initializeTradingPane(workspace: VelaWorkspace): void {
   paneLots.value = lotsInput.value;
 
   const placeTradeLauncher = () => {
+    for (const button of document.querySelectorAll<HTMLButtonElement>(
+      '.vela-widget-panels .vela-widget-tool, button[class*="vela-widget-panel-"], #trading-pane-toggle',
+    )) {
+      const label = button.getAttribute('aria-label')?.trim();
+      if (!label) continue;
+      let labelElement = button.querySelector<HTMLSpanElement>(':scope > .omega-panel-button-label');
+      if (!labelElement) {
+        labelElement = document.createElement('span');
+        labelElement.className = 'omega-panel-button-label';
+        labelElement.setAttribute('aria-hidden', 'true');
+        button.append(labelElement);
+      }
+      if (labelElement.textContent !== label) labelElement.textContent = label;
+    }
     const alertButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => {
       const label = `${button.getAttribute('aria-label') ?? ''} ${button.getAttribute('title') ?? ''}`.toLowerCase();
       return button !== toggle && label.includes('alert');
@@ -940,7 +954,12 @@ function initializeTradingPane(workspace: VelaWorkspace): void {
   };
   placeTradeLauncher();
   const toolbarObserver = new MutationObserver(placeTradeLauncher);
-  toolbarObserver.observe(document.body, { childList: true, subtree: true });
+  toolbarObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['aria-label'],
+    childList: true,
+    subtree: true,
+  });
 
   let side: PaperTradeSide = 'buy';
   let paneInstrument: { symbol: string; contractSize: number; pipSize: number; currency: string } | null = null;
