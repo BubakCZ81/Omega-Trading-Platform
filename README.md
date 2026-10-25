@@ -1,4 +1,4 @@
-# Omega 2.5.1
+# Omega 2.6.0
 
 Omega is a Windows desktop charting and Pine Script development platform built
 with Electron, TypeScript, and Vite.
