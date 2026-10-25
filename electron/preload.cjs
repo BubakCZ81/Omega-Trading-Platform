@@ -56,8 +56,16 @@ window.addEventListener('change', event => {
     recordDiagnostic('change', { target: describeTarget(event.target) });
   }
 }, true);
-window.addEventListener('error', () => recordDiagnostic('error', { name: 'window.error' }), true);
-window.addEventListener('unhandledrejection', () => recordDiagnostic('error', { name: 'window.unhandledrejection' }), true);
+window.addEventListener('error', event => recordDiagnostic('error', {
+  name: 'window.error',
+  message: safeDiagnosticMessage(event.message),
+}), true);
+window.addEventListener('unhandledrejection', event => {
+  const reason = event.reason instanceof Error
+    ? `${event.reason.name}: ${event.reason.message}`
+    : typeof event.reason === 'string' ? event.reason : undefined;
+  recordDiagnostic('error', { name: 'window.unhandledrejection', message: safeDiagnosticMessage(reason) });
+}, true);
 document.addEventListener('toggle', event => {
   if (event.target instanceof HTMLDetailsElement) {
     recordDiagnostic('window', { name: event.target.open ? 'details.open' : 'details.close', target: describeTarget(event.target) });

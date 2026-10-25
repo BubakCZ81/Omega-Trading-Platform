@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
+const fsSync = require('node:fs');
 const fs = require('fs/promises');
 const { pathToFileURL } = require('url');
 const { CTraderIntegration } = require('./ctrader.cjs');
@@ -16,6 +17,7 @@ let splashWindow = null;
 let startupFallbackTimer = null;
 let activeBroker = null;
 let brokerSdk = null;
+let providerConnectionRevision = 0;
 let localAiAssistant = null;
 let diagnosticsWindow = null;
 const diagnosticsEntries = [];
@@ -71,7 +73,7 @@ function safeDiagnosticMessage(value) {
     .replace(/([?&](?:api[_-]?key|api[_-]?secret|token|access_token|refresh_token|signature|authorization)=)[^&\s]+/gi, '$1[REDACTED]'), 400);
 }
 
-function appendDiagnostic(record) {
+function appendDiagnostic(record, persist = true) {
   const entry = {
     time: new Date().toISOString(),
     source: boundedText(record?.source, 32) || 'app',
@@ -86,6 +88,7 @@ function appendDiagnostic(record) {
   if (diagnosticsEntries.length > DIAGNOSTICS_LIMIT) diagnosticsEntries.splice(0, diagnosticsEntries.length - DIAGNOSTICS_LIMIT);
   if (diagnosticsWindow && !diagnosticsWindow.isDestroyed()) diagnosticsWindow.webContents.send('diagnostics:entry', entry);
 
+  if (!persist) return entry;
   diagnosticsWriteQueue = diagnosticsWriteQueue.then(async () => {
     await fs.mkdir(path.dirname(diagnosticsFile), { recursive: true });
     const current = await fs.stat(diagnosticsFile).catch(error => {
@@ -103,6 +106,26 @@ function appendDiagnostic(record) {
   });
   return entry;
 }
+
+function appendFatalDiagnostic(record) {
+  const entry = appendDiagnostic(record, false);
+  try {
+    fsSync.mkdirSync(path.dirname(diagnosticsFile), { recursive: true });
+    fsSync.appendFileSync(diagnosticsFile, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (error) {
+    console.error('Could not persist fatal Omega diagnostic event:', error);
+  }
+}
+
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+  appendFatalDiagnostic({
+    source: 'electron-main',
+    type: 'process',
+    name: 'uncaught-exception',
+    status: 'error',
+    message: `${origin}: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`,
+  });
+});
 
 function describeBarFetch(request, bars) {
   if (!request || typeof request !== 'object') return 'Invalid Alpaca history request metadata.';
@@ -247,6 +270,25 @@ app.on('browser-window-created', (_event, window) => {
     type: 'window',
     name: `closed: ${title}`,
   }));
+  window.on('unresponsive', () => appendDiagnostic({
+    source: 'electron-main',
+    type: 'window',
+    name: `unresponsive: ${title}`,
+    status: 'error',
+  }));
+  window.on('responsive', () => appendDiagnostic({
+    source: 'electron-main',
+    type: 'window',
+    name: `responsive: ${title}`,
+    status: 'ok',
+  }));
+  window.webContents.on('render-process-gone', (_event, details) => appendDiagnostic({
+    source: 'electron-main',
+    type: 'process',
+    name: `renderer-gone: ${title}`,
+    status: 'error',
+    message: `reason=${details.reason}; exitCode=${details.exitCode}`,
+  }));
 });
 
 cTrader.on('quote', (quote) => {
@@ -255,6 +297,13 @@ cTrader.on('quote', (quote) => {
 function getBrokerSdk() {
   brokerSdk ??= require('@luxalgo/broker-sdk');
   return brokerSdk;
+}
+
+async function disconnectAllConnections() {
+  const revision = ++providerConnectionRevision;
+  activeBroker = null;
+  await Promise.all([cTrader.disconnect(), mt5.disconnect(), alpaca.disconnect()]);
+  return revision;
 }
 
 function assertTrustedBrokerRequest(event) {
@@ -514,10 +563,11 @@ ipcMain.handle('broker:connect-read-only', async (event, request) => {
     credentials[field.key] = value.trim();
   }
 
-  activeBroker = null;
-  await cTrader.disconnect();
+  const revision = await disconnectAllConnections();
+  if (revision !== providerConnectionRevision) throw new Error('Broker connection was superseded by a newer provider request.');
   const connection = sdk.connect({ broker: brokerInfo.id, credentials });
   const snapshot = await connection.fetchSnapshot();
+  if (revision !== providerConnectionRevision) throw new Error('Broker connection was superseded by a newer provider request.');
   activeBroker = connection;
   return toBrokerSnapshot(snapshot);
 });
@@ -535,13 +585,15 @@ ipcMain.handle('broker:has-saved-alpaca-credentials', async (event) => {
 
 ipcMain.handle('ctrader:authorize', async (event, credentials) => {
   assertTrustedBrokerRequest(event);
-  activeBroker = null;
-  await cTrader.disconnect();
   if (!credentials || typeof credentials.clientId !== 'string' || typeof credentials.clientSecret !== 'string'
     || (credentials.allowTrading !== undefined && typeof credentials.allowTrading !== 'boolean')) {
     throw new Error('Enter the cTrader Open API Client ID and Client Secret.');
   }
-  return cTrader.authorize(credentials);
+  const revision = await disconnectAllConnections();
+  if (revision !== providerConnectionRevision) throw new Error('cTrader authorization was superseded by a newer provider request.');
+  const authorization = await cTrader.authorize(credentials);
+  if (revision !== providerConnectionRevision) throw new Error('cTrader authorization was superseded by a newer provider request.');
+  return authorization;
 });
 
 ipcMain.handle('ctrader:select-account', async (event, accountId) => {
@@ -597,15 +649,19 @@ ipcMain.handle('broker:fetch-bars', async (event, request) => {
   return activeBroker.fetchBars(request.symbol.trim().toUpperCase(), { timeframe, from, to, limit });
 });
 
-ipcMain.handle('broker:disconnect', (event) => {
+ipcMain.handle('broker:disconnect', async (event) => {
   assertTrustedBrokerRequest(event);
-  activeBroker = null;
-  return cTrader.disconnect().then(() => true);
+  await disconnectAllConnections();
+  return true;
 });
 
 ipcMain.handle('mt5:connect', async (event, pythonExecutable) => {
   assertTrustedBrokerRequest(event);
-  return mt5.connect(pythonExecutable);
+  const revision = await disconnectAllConnections();
+  if (revision !== providerConnectionRevision) throw new Error('MetaTrader connection was superseded by a newer provider request.');
+  const connection = await mt5.connect(pythonExecutable);
+  if (revision !== providerConnectionRevision) throw new Error('MetaTrader connection was superseded by a newer provider request.');
+  return connection;
 });
 
 ipcMain.handle('mt5:bars', async (event, request) => {

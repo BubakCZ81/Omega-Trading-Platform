@@ -257,6 +257,7 @@ export function initializeAlpacaSdkFeed(getWorkspace: () => VelaWorkspace): void
 
   document.addEventListener('omega:trading-broker-connected', connect);
   document.addEventListener('omega:trading-broker-disconnected', disconnect);
+  document.addEventListener('omega:trading-broker-connecting', disable);
   getWorkspace().on('cell:created', event => {
     if (!connected) return;
     const cell = getWorkspace().cell(event.id);
