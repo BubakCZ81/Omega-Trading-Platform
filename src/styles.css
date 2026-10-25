@@ -80,18 +80,41 @@ body[data-theme-variant="high-contrast"] {
   --omega-warning: #6e4700;
 }
 
-body[data-theme-variant="high-contrast"] :is(button, input, select, textarea, [role="button"], summary) {
+body[data-theme-variant="high-contrast-dark"] {
+  --omega-bg: #101d30;
+  --omega-surface: #162842;
+  --omega-elevated: #203957;
+  --omega-text: #f5f9ff;
+  --omega-muted: #d2e1f5;
+  --omega-border: #9bbde5;
+  --omega-accent: #70b7ff;
+  --omega-accent-hover: #a1d0ff;
+  --omega-error: #ff6473;
+  --omega-success: #00c98d;
+  --omega-warning: #ffd166;
+}
+
+body[data-theme-variant^="high-contrast"] :is(button, input, select, textarea, [role="button"], summary) {
   outline-color: var(--omega-accent);
 }
 
-body[data-theme-variant="high-contrast"] :is(button, input, select, textarea, summary) {
+body[data-theme-variant^="high-contrast"] :is(button, input, select, textarea, summary) {
   border-color: var(--omega-border);
 }
 
-body[data-theme-variant="high-contrast"] :is(button, input, select, textarea):focus-visible,
-body[data-theme-variant="high-contrast"] summary:focus-visible {
+body[data-theme-variant^="high-contrast"] :is(button, input, select, textarea):focus-visible,
+body[data-theme-variant^="high-contrast"] summary:focus-visible {
   outline: 3px solid var(--omega-accent);
   outline-offset: 2px;
+}
+
+.vela-workspace .vela-panel,
+#editor-drawer,
+#console-panel,
+#pine-reference,
+#pine-ai-assistant,
+#omega-trading-pane {
+  border: 1px solid var(--omega-border);
 }
 
 /* ============================================================
@@ -307,7 +330,7 @@ input, textarea, select, [contenteditable="true"],
         min-height: 120px;
         max-height: 70vh;
         background: var(--omega-bg);
-        border-top: 1px solid var(--omega-elevated);
+        border: 1px solid var(--omega-border);
         display: none;
         flex-direction: column;
         flex-shrink: 0;
@@ -353,7 +376,7 @@ input, textarea, select, [contenteditable="true"],
 
       #console-panel {
         height: 200px; min-height: 80px; max-height: 50vh; background: var(--omega-bg);
-        border-top: 1px solid var(--omega-elevated); display: flex; flex-direction: column; flex-shrink: 0;
+        border: 1px solid var(--omega-border); display: flex; flex-direction: column; flex-shrink: 0;
         position: relative; z-index: 24;
       }
 
@@ -411,7 +434,7 @@ input, textarea, select, [contenteditable="true"],
 		--pine-reference-font-size: var(--font-size-base);
         width: 320px; min-width: 250px; max-width: 60%; height: 100%;
         flex: 0 0 auto; display: flex; flex-direction: column; background: var(--omega-surface);
-        border: 0; color: var(--omega-text);
+        border: 1px solid var(--omega-border); color: var(--omega-text);
       }
       .pine-reference-heading, .pine-ai-heading {
         min-height: 42px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-md);
@@ -459,7 +482,7 @@ input, textarea, select, [contenteditable="true"],
       #pine-ai-assistant {
         width: 520px; min-width: 400px; max-width: 65%; height: 100%; padding: 0 var(--space-md) var(--space-md);
         flex: 0 0 auto; display: flex; flex-direction: column; gap: var(--space-md); overflow: hidden; color: var(--omega-text);
-        background: var(--omega-surface); border-left: 1px solid var(--omega-border);
+        background: var(--omega-surface); border: 1px solid var(--omega-border);
       }
       #pine-ai-assistant .pine-ai-heading { position: relative; z-index: 3; flex: 0 0 auto; margin: 0 calc(-1 * var(--space-md)); padding: var(--space-md) var(--space-md); background: var(--omega-surface); }
       #pine-ai-conversation-title { margin: var(--space-xs) 0 0; color: var(--omega-muted); font-size: var(--font-size-sm); }
@@ -1903,7 +1926,7 @@ body:not([data-theme="light"]) .omega-measure-sublabel {
   width: 320px;
   max-width: 90vw;
   background: var(--omega-surface);
-  border-left: 1px solid var(--omega-border);
+  border: 1px solid var(--omega-border);
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.35);
   z-index: 95;
   display: flex;

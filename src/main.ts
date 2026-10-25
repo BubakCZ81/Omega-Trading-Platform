@@ -401,7 +401,7 @@ let currentScriptName = requestedPineScript && scripts[requestedPineScript]
   ? requestedPineScript
   : Object.keys(scripts)[0] || 'Dual EMA Cross';
 const savedTheme = localStorage.getItem('vela_theme');
-type OmegaTheme = 'dark' | 'light' | 'high-contrast';
+type OmegaTheme = 'dark' | 'light' | 'high-contrast' | 'high-contrast-dark';
 const HIGH_CONTRAST_THEME: VelaTheme = {
   background: '#f7fbff',
   textColor: '#061a33',
@@ -411,7 +411,22 @@ const HIGH_CONTRAST_THEME: VelaTheme = {
   downColor: '#b00020',
   fontFamily: 'Arial, sans-serif',
 };
-let currentTheme: OmegaTheme = savedTheme === 'light' || savedTheme === 'high-contrast' ? savedTheme : 'dark';
+const HIGH_CONTRAST_DARK_THEME: VelaTheme = {
+  background: '#101d30',
+  textColor: '#f5f9ff',
+  gridColor: '#506d91',
+  borderColor: '#9bbde5',
+  upColor: '#00c98d',
+  downColor: '#ff6473',
+  fontFamily: 'Arial, sans-serif',
+};
+const isOmegaTheme = (theme: unknown): theme is OmegaTheme =>
+  theme === 'dark' || theme === 'light' || theme === 'high-contrast' || theme === 'high-contrast-dark';
+const velaTheme = (theme: OmegaTheme): VelaTheme | 'dark' | 'light' =>
+  theme === 'high-contrast' ? HIGH_CONTRAST_THEME
+    : theme === 'high-contrast-dark' ? HIGH_CONTRAST_DARK_THEME
+      : theme;
+let currentTheme: OmegaTheme = isOmegaTheme(savedTheme) ? savedTheme : 'dark';
 let workspace: VelaWorkspace;
 let workspaceInitialized = false;
 let barThickness = Math.max(0.15, Math.min(1, Number(localStorage.getItem('vela_bar_thickness') ?? 1)));
@@ -661,12 +676,12 @@ registerStatePersistence({
   restore: payload => {
     if (!payload || typeof payload !== 'object') return;
     const preferences = payload as Record<string, unknown>;
-    if (preferences.theme === 'dark' || preferences.theme === 'light' || preferences.theme === 'high-contrast') {
+    if (isOmegaTheme(preferences.theme)) {
       currentTheme = preferences.theme;
       localStorage.setItem('vela_theme', currentTheme);
       if (workspaceInitialized) {
-        workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
-        setPineEditorTheme?.(currentTheme === 'dark' ? 'dark' : 'light');
+        workspace.setTheme(velaTheme(currentTheme));
+        setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
         updateThemeUI(currentTheme);
       }
     }
@@ -843,9 +858,9 @@ function registerChartSettings(chart: VelaWorkspace['chart']) {
         {
           kind: 'select',
           label: 'Platform theme',
-          options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast (blue)']],
+          options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast — light blue'], ['high-contrast-dark', 'High contrast — dark blue']],
           get: () => currentTheme,
-          set: (theme: string) => setTheme(theme === 'high-contrast' ? 'high-contrast' : theme === 'light' ? 'light' : 'dark'),
+          set: (theme: string) => setTheme(isOmegaTheme(theme) ? theme : 'dark'),
         },
         {
           kind: 'color',
@@ -981,7 +996,7 @@ document.getElementById('chart')!.append(chartGridHost);
 setStartupStatus('Building your trading workspace…');
 try {
   workspace = await bootWithOptionalModules([optionalModuleLoads], () => new VelaWorkspace(chartGridHost, {
-    layout: initialWorkspaceLayout, symbol: 'BTCUSDT', timeframe: '60', live: true, volume: false, theme: currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme, persist: 'vela-workspace', storage: workspaceStorage,
+    layout: initialWorkspaceLayout, symbol: 'BTCUSDT', timeframe: '60', live: true, volume: false, theme: velaTheme(currentTheme), persist: 'vela-workspace', storage: workspaceStorage,
     cells: restoredWorkspaceState?.charts?.length ? Object.fromEntries(restoredWorkspaceState.charts.map((chart: { id: string; symbol?: string; timeframe?: string }) => [chart.id, { symbol: chart.symbol, timeframe: chart.timeframe }])) : (window.velaWorkspaceFiles ? { primary: { symbol: 'BTCUSDT', timeframe: '60' } } : undefined),
     sync: restoredWorkspaceState?.sync,
     topbar: { left: ['symbol', 'indicators', 'omega-favorite-drawing-tools'] },
@@ -998,7 +1013,7 @@ try {
   throw err;
 }
 workspaceInitialized = true;
-workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
+workspace.setTheme(velaTheme(currentTheme));
 
 mt5FeedModule.value?.initializeMt5Feed(() => workspace);
 alpacaSdkFeedModule.value?.initializeAlpacaSdkFeed(() => workspace);
@@ -2729,11 +2744,11 @@ const themeMenu = document.getElementById('theme-menu') as HTMLDetailsElement;
 const themeChoices = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]'));
 
 function updateThemeUI(theme: OmegaTheme) {
-  const baseTheme = theme === 'high-contrast' ? 'light' : theme;
+  const baseTheme = theme === 'high-contrast' ? 'light' : theme === 'high-contrast-dark' ? 'dark' : theme;
   document.documentElement.dataset.theme = baseTheme;
   document.body.dataset.theme = baseTheme;
-  document.documentElement.dataset.themeVariant = theme === 'high-contrast' ? 'high-contrast' : '';
-  document.body.dataset.themeVariant = theme === 'high-contrast' ? 'high-contrast' : '';
+  document.documentElement.dataset.themeVariant = theme.startsWith('high-contrast') ? theme : '';
+  document.body.dataset.themeVariant = theme.startsWith('high-contrast') ? theme : '';
   document.documentElement.style.colorScheme = baseTheme;
   themeMenu.dataset.active = 'true';
   for (const choice of themeChoices) {
@@ -2751,12 +2766,12 @@ function setTheme(theme: OmegaTheme) {
   updateThemeUI(currentTheme);
   refreshMarketFlowStyles();
   try {
-    workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
+    workspace.setTheme(velaTheme(currentTheme));
   } catch (error) {
     console.error('Could not apply the selected theme to the chart workspace:', error);
   }
   try {
-    setPineEditorTheme?.(currentTheme === 'dark' ? 'dark' : 'light');
+    setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
   } catch (error) {
     console.error('Could not apply the selected theme to the Pine editor:', error);
   }
@@ -2773,7 +2788,7 @@ function selectThemeFromMenu(event: Event) {
   event.preventDefault();
   event.stopPropagation();
   const themeChoice = choice.dataset.themeChoice;
-  const theme: OmegaTheme = themeChoice === 'high-contrast' ? 'high-contrast' : themeChoice === 'light' ? 'light' : 'dark';
+  const theme: OmegaTheme = isOmegaTheme(themeChoice) ? themeChoice : 'dark';
   setTheme(theme);
   themeMenu.open = false;
 }
