@@ -174,6 +174,9 @@ contextBridge.exposeInMainWorld('velaAi', {
   saveKey: (provider, apiKey) => ipcRenderer.invoke('ai:save-key', { provider, apiKey }),
   clearKey: (provider) => ipcRenderer.invoke('ai:clear-key', provider),
   testKey: (provider, apiKey) => ipcRenderer.invoke('ai:test-key', { provider, apiKey }),
+  localConfig: () => ipcRenderer.invoke('ai:local-config'),
+  saveLocalConfig: (request) => ipcRenderer.invoke('ai:save-local-config', request),
+  testLocalConfig: (request) => ipcRenderer.invoke('ai:test-local-config', request),
   complete: (request) => ipcRenderer.invoke('ai:complete', request),
 });
 

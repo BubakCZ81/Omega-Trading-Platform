@@ -294,6 +294,7 @@ function getLocalAiAssistant() {
   localAiAssistant ??= new LocalAiAssistant({
     safeStorage: require('electron').safeStorage,
     storagePath: path.join(app.getPath('userData'), 'ai-api-keys.json'),
+    localConfigPath: path.join(app.getPath('userData'), 'ai-local-endpoint.json'),
   });
   return localAiAssistant;
 }
@@ -420,6 +421,21 @@ ipcMain.handle('ai:test-key', async (event, request) => {
   assertTrustedWorkspaceRequest(event);
   if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Invalid AI key test request.');
   return getLocalAiAssistant().testKey(request.provider, request.apiKey);
+});
+
+ipcMain.handle('ai:local-config', async (event) => {
+  assertTrustedWorkspaceRequest(event);
+  return getLocalAiAssistant().localConfig();
+});
+
+ipcMain.handle('ai:save-local-config', async (event, request) => {
+  assertTrustedWorkspaceRequest(event);
+  return getLocalAiAssistant().saveLocalConfig(request);
+});
+
+ipcMain.handle('ai:test-local-config', async (event, request) => {
+  assertTrustedWorkspaceRequest(event);
+  return getLocalAiAssistant().testLocalConfig(request);
 });
 
 ipcMain.handle('ai:complete', async (event, request) => {

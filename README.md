@@ -58,3 +58,25 @@ and is bundled with the Electron application.
 Paper trades and pending paper orders are local simulations. Alpaca, MetaTrader
 5, and cTrader provide market data; the cTrader connection is read-only. This
 project does not certify live-trading readiness.
+
+## Local AI endpoints
+
+In the Pine AI assistant's **Provider settings**, choose **Local OpenAI-compatible API**,
+enter the server's localhost base URL (for example `http://127.0.0.1:1234/v1` for
+LM Studio), select **Test endpoint & load models**, choose or enter a model ID,
+and save. This supports local servers that expose OpenAI-compatible `/models`
+and `/chat/completions` endpoints, such as LM Studio, llama.cpp, KoboldCpp, and
+other compatible desktop servers. The endpoint must use plain HTTP on
+`localhost`, `127.0.0.1`, or `[::1]`; remote URLs are rejected. An API key is
+optional and, if supplied, is encrypted using Windows user storage. With this
+provider selected and LuxAlgo MCP research disabled, Omega sends prompts only
+to the configured local endpoint. Any separate web-search or tool capability
+must be configured in the local model server itself.
+
+The Pine AI assistant can optionally search the public LuxAlgo Library through
+LuxAlgo's hosted MCP endpoint (`https://mcp.luxalgo.com/mcp`). Enable **Include
+LuxAlgo Library research (MCP)** under the assistant prompt to add read-only
+concept and indicator search results as context. This makes a request to
+LuxAlgo and your selected AI provider; it does not connect cTrader or send
+chart OHLC data to the MCP server. The integration does not sign in or expose
+broker accounts, journal tools, or trade execution.

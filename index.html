@@ -459,6 +459,7 @@
                       <div class="pine-ai-row">
                         <label class="pine-ai-field" for="pine-ai-provider">Provider
                           <select id="pine-ai-provider">
+                            <option value="local">Local OpenAI-compatible API</option>
                             <option value="gemini">Google Gemini</option>
                             <option value="groq">Groq</option>
                             <option value="openrouter">OpenRouter</option>
@@ -473,14 +474,34 @@
                           <select id="pine-ai-model" aria-label="AI model"></select>
                         </label>
                       </div>
-                      <label class="pine-ai-field" for="pine-ai-key">API key
-                        <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
-                      </label>
-                      <div class="pine-ai-row">
-                        <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
-                        <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                      <div id="pine-ai-cloud-settings">
+                        <label class="pine-ai-field" for="pine-ai-key">API key
+                          <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
+                          <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                        </div>
+                        <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
                       </div>
-                      <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
+                      <div id="pine-ai-local-settings" hidden>
+                        <label class="pine-ai-field" for="pine-ai-local-url">Local API base URL
+                          <input id="pine-ai-local-url" type="url" spellcheck="false" maxlength="500" placeholder="http://127.0.0.1:1234/v1">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-key">Optional local API key
+                          <input id="pine-ai-local-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Optional; encrypted if saved">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-model">Model ID
+                          <input id="pine-ai-local-model" type="text" list="pine-ai-local-models" spellcheck="false" maxlength="120" placeholder="Load models or enter a model ID">
+                          <datalist id="pine-ai-local-models"></datalist>
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-test-local" class="btn" type="button">Test endpoint &amp; load models</button>
+                          <button id="pine-ai-save-local" class="btn" type="button">Save local settings</button>
+                        </div>
+                        <button id="pine-ai-clear-local-key" class="btn" type="button">Remove saved local API key</button>
+                        <small>Localhost only. Prompts go directly to your local server; LuxAlgo research is separate and optional.</small>
+                      </div>
                     </div>
                   </details>
                   <button id="pine-ai-close" class="btn" type="button" aria-label="Close AI assistant">Close</button>
@@ -489,6 +510,10 @@
               <div id="pine-ai-history" data-panel-id="pine-ai-history" aria-label="Saved conversations" hidden></div>
               <div id="pine-ai-chat" role="log" aria-live="polite" aria-label="Conversation messages"></div>
               <p id="pine-ai-status" role="status" aria-live="polite"></p>
+              <label id="pine-ai-luxalgo-option" title="Search the public, read-only LuxAlgo Library over MCP and include the results with your prompt">
+                <input id="pine-ai-luxalgo-enabled" type="checkbox">
+                Include LuxAlgo Library research (MCP)
+              </label>
               <div id="pine-ai-composer">
                 <textarea id="pine-ai-prompt" maxlength="4000" aria-label="Message" placeholder="Ask about the current Pine script…"></textarea>
                 <button id="pine-ai-ask" class="btn btn-primary" type="button">Send</button>

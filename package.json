@@ -15,6 +15,7 @@
     "test:workspace-state": "node --experimental-strip-types --test src/workspaceScriptIndicators.test.mjs src/timeframeSelection.test.mjs",
     "test:startup-workspace": "node --experimental-strip-types --test src/startupWorkspaceState.test.mjs",
     "test:alpaca-feed": "node --test electron/alpaca.test.cjs && node --experimental-strip-types --test src/alpacaFeed.test.mjs",
+    "test:luxalgo-mcp": "node --test electron/luxalgo-mcp.test.cjs electron/local-ai-mcp.test.cjs",
     "test:local-ai": "node --test electron/local-ai.test.cjs",
     "test:modules": "node --experimental-strip-types --test src/featureModules.test.mjs",
     "test:vela-dismissal": "node --test scripts/velaDismissalPatch.test.mjs",
