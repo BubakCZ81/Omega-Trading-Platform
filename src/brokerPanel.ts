@@ -1,3 +1,5 @@
+import type { OHLCV } from '@luxalgo/vela';
+
 export {};
 
 interface BrokerCredentialField {
@@ -100,7 +102,16 @@ interface BrokerSnapshot {
 interface BrokerBridge {
   listBrokers(): Promise<BrokerInfo[]>;
   connectReadOnly(brokerId: string, credentials: Record<string, string>): Promise<BrokerSnapshot>;
+  saveAlpacaCredentials?(credentials: { apiKey: string; apiSecret: string }): Promise<{ configured: boolean }>;
+  hasSavedAlpacaCredentials?(): Promise<boolean>;
   fetchSnapshot(): Promise<BrokerSnapshot>;
+  fetchHistoricalBars(request: {
+    symbol: string;
+    timeframe: '1m' | '5m' | '15m' | '1h' | '1d';
+    from: number;
+    to: number;
+    limit: number;
+  }): Promise<OHLCV[] | null>;
   hasSavedCTraderCredentials?(): Promise<boolean>;
   cTraderDataFeedOnly?: boolean;
   authorizeCTrader(credentials: { clientId: string; clientSecret: string; allowTrading: boolean }): Promise<CTraderAuthorization>;
@@ -132,6 +143,7 @@ const brokerSelect = document.getElementById('broker-select') as HTMLSelectEleme
 const fieldsHost = document.getElementById('broker-fields');
 const setupNote = document.getElementById('broker-setup-note');
 const connectButton = document.getElementById('broker-connect') as HTMLButtonElement | null;
+const saveCredentialsButton = document.getElementById('broker-save-credentials') as HTMLButtonElement | null;
 const refreshButton = document.getElementById('broker-refresh') as HTMLButtonElement | null;
 const disconnectButton = document.getElementById('broker-disconnect') as HTMLButtonElement | null;
 const status = document.getElementById('broker-status');
@@ -178,8 +190,10 @@ function renderCredentialFields() {
   fieldsHost.replaceChildren();
   const broker = selectedBroker();
   const isCTrader = broker?.id === 'ctrader';
+  const isAlpaca = broker?.id === 'alpaca';
   setupNote.textContent = broker?.readOnlySetup ?? '';
   if (connectButton) connectButton.textContent = isCTrader ? 'Authorize with cTrader' : 'Connect Read Only';
+  if (saveCredentialsButton) saveCredentialsButton.hidden = !isAlpaca;
   if (ctraderAccountControls) ctraderAccountControls.hidden = !isCTrader;
   if (ctraderPermissions) ctraderPermissions.hidden = !isCTrader || window.velaBroker?.cTraderDataFeedOnly === true;
   if (ctraderMarketControls) ctraderMarketControls.hidden = true;
@@ -243,8 +257,16 @@ function renderSnapshot(snapshot: BrokerSnapshot) {
 	return;
   }
 
-  for (const account of snapshot.accounts) {
-	const card = document.createElement('section');
+	for (const account of snapshot.accounts) {
+		document.dispatchEvent(new CustomEvent('omega:trading-account-available', {
+		  detail: {
+			id: `${snapshot.broker}:${account.name}`,
+			label: `${snapshot.broker} · ${account.name}`,
+			mode: (account.environment ?? 'connected').toUpperCase(),
+			detail: `${snapshot.broker} data · read-only`,
+		  },
+		}));
+		const card = document.createElement('section');
 	card.className = 'broker-account';
 	const heading = document.createElement('div');
 	heading.className = 'broker-account-heading';
@@ -340,6 +362,7 @@ async function authorizeCTrader(credentials: Record<string, string>) {
 	  ctraderAccountSelect?.append(option);
 	}
 	activeBrokerId = 'ctrader';
+	document.dispatchEvent(new CustomEvent('omega:trading-broker-connected', { detail: 'ctrader' }));
 	if (disconnectButton) disconnectButton.hidden = false;
 	setStatus(authorization.warnings.length
 	  ? `Authorized. Some environments could not be queried: ${authorization.warnings.join(' ')}`
@@ -364,6 +387,14 @@ async function selectCTraderAccount() {
 	cTraderSymbols.clear();
 	for (const symbol of details.symbols) cTraderSymbols.set(symbol.id, symbol.name);
 	document.dispatchEvent(new CustomEvent('omega:ctrader-account-selected', { detail: details.symbols }));
+	document.dispatchEvent(new CustomEvent('omega:trading-account-available', {
+	  detail: {
+		id: `ctrader:${details.account.id}`,
+		label: `cTrader · ${details.account.login || details.account.id}`,
+		mode: details.account.environment.toUpperCase(),
+		detail: details.account.tradingEnabled ? 'cTrader account selected' : 'cTrader data · read-only',
+	  },
+	}));
 	ctraderPositionsList?.replaceChildren();
 	if (ctraderSymbolSelect) {
 	  ctraderSymbolSelect.replaceChildren();
@@ -574,6 +605,19 @@ async function connectReadOnly() {
 	}
   }
 
+  if (broker.id === 'alpaca' && !credentials.apiKey?.trim() && !credentials.apiSecret?.trim()) {
+    try {
+      if (!await window.velaBroker.hasSavedAlpacaCredentials?.()) {
+        setStatus('Enter both Alpaca API credentials and click Save credentials first.', true);
+        fieldsHost?.querySelector<HTMLInputElement>('input[data-credential-key="apiKey"]')?.focus();
+        return;
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+      return;
+    }
+  }
+
   connectButton.disabled = true;
   if (broker.id === 'ctrader') {
 	await authorizeCTrader(credentials);
@@ -590,7 +634,10 @@ async function connectReadOnly() {
 	document.dispatchEvent(new CustomEvent('omega:connection-latency', { detail: performance.now() - startedAt }));
 	activeBrokerId = broker.id;
 	renderSnapshot(snapshot);
-	setStatus(`Connected to ${broker.displayName}. Credentials are session-only.`);
+	document.dispatchEvent(new CustomEvent('omega:trading-broker-connected', { detail: broker.id }));
+	setStatus(broker.id === 'alpaca'
+	  ? `Connected to ${broker.displayName}. Saved encrypted credentials will be reused on this device.`
+	  : `Connected to ${broker.displayName}. Credentials are session-only.`);
 	if (refreshButton) refreshButton.hidden = false;
 	if (disconnectButton) disconnectButton.hidden = false;
   } catch (error) {
@@ -598,6 +645,31 @@ async function connectReadOnly() {
   } finally {
 	for (const input of fieldsHost?.querySelectorAll<HTMLInputElement>('input[data-credential-key]') ?? []) input.value = '';
 	connectButton.disabled = false;
+  }
+}
+
+async function saveAlpacaCredentials() {
+  if (!window.velaBroker || selectedBroker()?.id !== 'alpaca' || !saveCredentialsButton) return;
+  const apiKey = fieldsHost?.querySelector<HTMLInputElement>('input[data-credential-key="apiKey"]')?.value.trim() ?? '';
+  const apiSecret = fieldsHost?.querySelector<HTMLInputElement>('input[data-credential-key="apiSecret"]')?.value.trim() ?? '';
+  if (!apiKey || !apiSecret) {
+    setStatus('Enter both Alpaca API credentials before saving.', true);
+    return;
+  }
+  if (!window.velaBroker.saveAlpacaCredentials) {
+    setStatus('Encrypted Alpaca credential storage is unavailable in this app version.', true);
+    return;
+  }
+  saveCredentialsButton.disabled = true;
+  setStatus('Encrypting and saving Alpaca credentials…');
+  try {
+    await window.velaBroker.saveAlpacaCredentials({ apiKey, apiSecret });
+    for (const input of fieldsHost?.querySelectorAll<HTMLInputElement>('input[data-credential-key]') ?? []) input.value = '';
+    setStatus('Alpaca credentials are encrypted and saved on this Windows device. Leave both fields blank next time and click Connect Read Only.');
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    saveCredentialsButton.disabled = false;
   }
 }
 
@@ -620,6 +692,7 @@ async function refreshSnapshot() {
 async function disconnect() {
   if (!window.velaBroker) return;
   try {
+	const disconnectedBrokerId = activeBrokerId;
 	await window.velaBroker.disconnect();
 	activeBrokerId = null;
 	cTraderAccountId = null;
@@ -636,6 +709,7 @@ async function disconnect() {
 	if (refreshButton) refreshButton.hidden = true;
 	if (disconnectButton) disconnectButton.hidden = true;
 	document.dispatchEvent(new CustomEvent('omega:ctrader-disconnected'));
+	if (disconnectedBrokerId) document.dispatchEvent(new CustomEvent('omega:trading-broker-disconnected', { detail: disconnectedBrokerId }));
 	setStatus(window.velaBroker.cTraderDataFeedOnly
 	  ? 'Disconnected. Encrypted cTrader app credentials remain on this PC.'
 	  : 'Disconnected. No credentials were saved.');
@@ -663,6 +737,7 @@ brokerSelect?.addEventListener('change', () => {
   renderCredentialFields();
 });
 connectButton?.addEventListener('click', () => void connectReadOnly());
+saveCredentialsButton?.addEventListener('click', () => void saveAlpacaCredentials());
 ctraderSelectAccountButton?.addEventListener('click', () => void selectCTraderAccount());
 ctraderSubscribeButton?.addEventListener('click', () => void subscribeCTraderSymbol());
 ctraderChartButton?.addEventListener('click', () => {

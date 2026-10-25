@@ -55,6 +55,12 @@ export function formatTimeframeLabel(tf: string | undefined): string {
   return tf;
 }
 
+function providerFromTradingAccount(accountId: string | null): string {
+  if (!accountId) return '';
+  const separator = accountId.indexOf(':');
+  return separator > 0 ? accountId.slice(0, separator).trim().toLowerCase() : '';
+}
+
 export interface CellControlsDeps {
   getWorkspace: () => VelaWorkspace;
   getGroupForCell: (cellId: string) => string;
@@ -68,9 +74,19 @@ export class ChartCellControlsManager {
   private readonly activationHandlers = new Map<string, (event: PointerEvent) => void>();
   private activePopup: HTMLElement | null = null;
   private readonly deps: CellControlsDeps;
+  private preferredDataProvider = providerFromTradingAccount(localStorage.getItem('omega.selected-trading-account'));
 
   constructor(deps: CellControlsDeps) {
     this.deps = deps;
+    document.addEventListener('omega:trading-account-selected', event => {
+      const detail = (event as CustomEvent<{ provider?: string }>).detail;
+      this.preferredDataProvider = detail?.provider?.trim().toLowerCase() ?? '';
+      const source = this.activePopup?.querySelector<HTMLSelectElement>('.omega-symbol-source-select');
+      if (!source) return;
+      if (this.preferredDataProvider) this.selectPreferredProvider(source);
+      else source.value = '';
+      source.dispatchEvent(new Event('change'));
+    });
     document.addEventListener('pointerdown', event => {
       if (this.activePopup && !this.activePopup.contains(event.target as Node)) {
         this.closePopup();
@@ -103,6 +119,10 @@ export class ChartCellControlsManager {
       const timeframeMenu = document.getElementById('ctrader-timeframe-menu') as HTMLDetailsElement | null;
       if (timeframeMenu?.open && !timeframeMenu.contains(event.target as Node)) {
         timeframeMenu.open = false;
+      }
+      const replayMenu = document.getElementById('replay-menu') as HTMLDetailsElement | null;
+      if (replayMenu?.open && !replayMenu.contains(event.target as Node)) {
+        replayMenu.open = false;
       }
       workspace.setActiveCell(cellId);
       this.updateAll();
@@ -192,7 +212,7 @@ export class ChartCellControlsManager {
       symbolEl.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
-        this.openSymbolPicker(cellId, symbolEl);
+        this.openSymbolPickerForCell(cellId, symbolEl);
       });
     }
 
@@ -308,7 +328,8 @@ export class ChartCellControlsManager {
     this.positionPopup(menu, anchor);
   }
 
-  private openSymbolPicker(cellId: string, anchor: HTMLElement): void {
+  public openSymbolPickerForCell(cellId: string, anchor: HTMLElement): void {
+    if (!this.deps.getWorkspace().cell(cellId)) return;
     this.closePopup();
     this.openSymbolFallback(cellId, anchor);
   }
@@ -344,9 +365,13 @@ export class ChartCellControlsManager {
       const option = document.createElement('option');
       option.value = provider.name.toLowerCase();
       option.textContent = provider.displayName ?? provider.name;
-      option.selected = option.value === currentProvider;
       source.append(option);
     }
+    const preferredProvider = this.preferredDataProvider || currentProvider;
+    if (preferredProvider && !providers.some(provider => provider.name.toLowerCase() === preferredProvider)) {
+      source.add(new Option(`${preferredProvider} (not connected)`, preferredProvider));
+    }
+    source.value = preferredProvider || '';
     source.disabled = providers.length === 0;
 
     const selectedProvider = () => source.value.trim().toLowerCase();
@@ -362,7 +387,8 @@ export class ChartCellControlsManager {
         || item.ticker.toUpperCase().includes(query)
         || item.description?.toUpperCase().includes(query)
         || item.type?.toUpperCase().includes(query)).slice(0, 200);
-      if (query && !matches.some(item => item.ticker.toUpperCase() === query)) {
+      const connected = providers.some(item => item.name.toLowerCase() === provider);
+      if (query && (!provider || connected) && !matches.some(item => item.ticker.toUpperCase() === query)) {
         const custom = document.createElement('button');
         custom.type = 'button';
         custom.className = 'omega-symbol-item custom-match';
@@ -374,7 +400,11 @@ export class ChartCellControlsManager {
       if (!matches.length && !query) {
         const empty = document.createElement('div');
         empty.className = 'omega-symbol-empty';
-        empty.textContent = provider ? 'This feed has no loaded symbols yet.' : 'No connected feeds are available.';
+        empty.textContent = provider && !connected
+          ? `${provider} is selected as the trading account, but its market-data feed is not connected. Connect it from the Broker or Local Feeds panel.`
+          : provider
+            ? 'This feed has no loaded symbols yet.'
+            : 'No connected feeds are available.';
         list.append(empty);
       }
       for (const item of matches) {
@@ -404,11 +434,22 @@ export class ChartCellControlsManager {
       search.focus();
     });
     search.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && search.value.trim()) this.applySymbol(cellId, search.value.trim().toUpperCase());
+      if (event.key === 'Enter' && search.value.trim()) {
+        const ticker = search.value.trim().toUpperCase();
+        const provider = selectedProvider();
+        this.applySymbol(cellId, provider ? `${provider}:${ticker}` : ticker);
+      }
     });
     render();
     this.positionPopup(picker, anchor);
     search.focus();
+  }
+
+  private selectPreferredProvider(source: HTMLSelectElement): void {
+    if (![...source.options].some(option => option.value === this.preferredDataProvider)) {
+      source.add(new Option(`${this.preferredDataProvider} (not connected)`, this.preferredDataProvider));
+    }
+    source.value = this.preferredDataProvider;
   }
 
   private openTimeframeMenu(cellId: string, anchor: HTMLElement): void {

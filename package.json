@@ -1,13 +1,13 @@
 {
   "name": "vela-desktop-app",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "productName": "Omega",
   "description": "Omega Trading Desktop Platform",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "vite --strictPort",
+    "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test:ctrader": "node --test electron/ctrader.test.cjs",
     "test:ctrader-feed": "node --experimental-strip-types --test src/ctraderFeed.test.mjs",
@@ -31,7 +31,7 @@
     "dev:lightweight-poc": "vite --open /lightweight-chart-poc.html",
     "build:indicator-catalog": "node scripts/build-catalog.mjs",
     "migrate:indicators": "node scripts/migrate-everget.mjs",
-    "desktop": "concurrently --kill-others \"vite --strictPort\" \"wait-on http://localhost:5173 && electron .\"",
+    "desktop": "node scripts/desktop-dev.mjs",
     "desktop:prod": "npm run build && cross-env NODE_ENV=production electron .",
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never"
   },

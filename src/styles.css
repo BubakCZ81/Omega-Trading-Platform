@@ -209,8 +209,8 @@ input, textarea, select, [contenteditable="true"],
       }
       .chart-tab-add:hover:not(:disabled) { color: var(--omega-text); background: var(--omega-border); border-color: var(--omega-accent); }
       .chart-tab-add:disabled { opacity: .45; cursor: not-allowed; }
-      #chart-grid.omega-tabs-mode .vela-cell { visibility: hidden; pointer-events: none; z-index: 0; }
-      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] { visibility: visible; pointer-events: auto; z-index: 1; }
+      #chart-grid.omega-tabs-mode .vela-cell { visibility: hidden; pointer-events: none; z-index: 0 !important; }
+      #chart-grid.omega-tabs-mode .vela-cell[data-omega-tab-active="true"] { visibility: visible; pointer-events: auto; z-index: 10 !important; }
       
       /* Chart cells in workspace */
       .vela-cell {
@@ -792,9 +792,12 @@ input, textarea, select, [contenteditable="true"],
       #top-toolbar .dock-pill { color: var(--omega-text); font-weight: 600; gap: var(--space-md); }
       .platform-zoom-controls { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
       .connection-latency { color: var(--omega-muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .trading-account-status { display:grid; gap:1px; min-width:0; max-width:210px; padding:3px 7px; border-left:3px solid var(--omega-warning); color:var(--omega-text); font-variant-numeric:tabular-nums; line-height:1.15; }
+      .trading-account-status { display:flex; align-items:center; gap:7px; margin-left:auto; min-width:0; max-width:360px; padding:3px 7px; border-left:3px solid var(--omega-warning); color:var(--omega-text); font-variant-numeric:tabular-nums; line-height:1.15; }
+      .trading-account-label { color:var(--omega-muted); font-size:10px; white-space:nowrap; }
+      .trading-account-status select { min-width:142px; max-width:195px; background:var(--omega-elevated); border:1px solid var(--omega-border); border-radius:4px; color:var(--omega-text); padding:3px 5px; font-size:11px; font-weight:600; cursor:pointer; }
+      .trading-account-summary { display:grid; gap:1px; min-width:0; }
       .trading-account-status strong { color:var(--omega-warning); font-size:10px; letter-spacing:.04em; }
-      .trading-account-status span { overflow:hidden; color:var(--omega-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+      .trading-account-status .trading-account-summary > span { overflow:hidden; color:var(--omega-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
       .connection-latency[data-quality="good"] { color: var(--omega-success); }
       .connection-latency[data-quality="warning"] { color: var(--omega-warning); }
       .connection-latency[data-quality="poor"] { color: var(--omega-error); }
@@ -1710,22 +1713,24 @@ body:not([data-theme="light"]) .vela-workspace .vela-bb-settings:hover {
   padding: 5px !important;
   display: inline-grid !important;
   place-items: center;
-  color: var(--omega-text, #f1f5f9) !important;
-  background: var(--omega-elevated, #1e222d) !important;
-  border-color: var(--omega-border, #2a2e39) !important;
+  color: var(--omega-muted, #94a3b8) !important;
+  background: transparent !important;
+  border-color: transparent !important;
   box-shadow: none;
   outline: none !important;
 }
 .omega-trade-launcher:hover,
 .omega-trade-launcher:focus,
-.omega-trade-launcher:focus-visible,
-.omega-trade-launcher.active {
+.omega-trade-launcher:focus-visible {
   color: var(--omega-text, #f1f5f9) !important;
   background: var(--omega-elevated, #1e222d) !important;
   border-color: var(--omega-border, #2a2e39) !important;
   box-shadow: none !important;
 }
 .omega-trade-launcher.active {
+  color: var(--omega-text, #f1f5f9) !important;
+  background: color-mix(in srgb, var(--omega-accent) 18%, var(--omega-elevated, #1e222d)) !important;
+  border-color: var(--omega-accent, #3b82f6) !important;
   outline: none !important;
 }
 .omega-trade-launcher svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; }

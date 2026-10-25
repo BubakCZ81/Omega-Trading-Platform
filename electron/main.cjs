@@ -8,6 +8,8 @@ const { AlpacaMarketData } = require('./alpaca.cjs');
 const { searchYahooNews, safeNewsLink } = require('./news.cjs');
 const { LocalAiAssistant } = require('./local-ai.cjs');
 
+const devServerUrl = process.env.OMEGA_DEV_SERVER_URL || `http://127.0.0.1:${process.env.OMEGA_DEV_PORT || '5173'}`;
+
 let mainWindow = null;
 let pineEditorWindow = null;
 let splashWindow = null;
@@ -15,9 +17,38 @@ let startupFallbackTimer = null;
 let activeBroker = null;
 let brokerSdk = null;
 let localAiAssistant = null;
+let diagnosticsWindow = null;
+const diagnosticsEntries = [];
 let platformZoomFactor = 1;
 const MIN_PLATFORM_ZOOM = 0.75;
 const MAX_PLATFORM_ZOOM = 1.5;
+const DIAGNOSTICS_LIMIT = 2_000;
+const DIAGNOSTICS_FILE_LIMIT = 10 * 1024 * 1024;
+const diagnosticsFile = path.join(app.getPath('userData'), 'diagnostics.jsonl');
+const diagnosticsReady = fs.readFile(diagnosticsFile, 'utf8').then(contents => {
+  for (const line of contents.split(/\r?\n/).filter(Boolean).slice(-DIAGNOSTICS_LIMIT)) {
+    try {
+      const entry = JSON.parse(line);
+      if (!entry || typeof entry.time !== 'string') continue;
+      diagnosticsEntries.push({
+        time: boundedText(entry.time, 40),
+        source: boundedText(entry.source, 32),
+        type: boundedText(entry.type, 32),
+        name: boundedText(entry.name, 120),
+        target: boundedText(entry.target, 160),
+        status: boundedText(entry.status, 16),
+        message: boundedText(entry.message, 400),
+        durationMs: Number.isFinite(entry.durationMs) ? Math.max(0, Math.round(entry.durationMs)) : undefined,
+      });
+    } catch (error) {
+      console.warn('Skipping an invalid Omega diagnostic log entry:', error instanceof Error ? error.name : 'Unknown error');
+    }
+  }
+  diagnosticsEntries.sort((left, right) => left.time.localeCompare(right.time));
+}).catch(error => {
+  if (error?.code !== 'ENOENT') console.error('Could not load the previous Omega diagnostic log:', error);
+});
+let diagnosticsWriteQueue = diagnosticsReady;
 const cTrader = new CTraderIntegration({ openExternal: (url) => shell.openExternal(url) });
 const mt5BridgeScript = app.isPackaged
   ? path.join(process.resourcesPath, 'mt5_bridge.py')
@@ -28,16 +59,171 @@ const alpaca = new AlpacaMarketData({
   storagePath: path.join(app.getPath('userData'), 'alpaca-market-data.json'),
 });
 
+function boundedText(value, limit = 240) {
+  return typeof value === 'string' ? value.replace(/[\r\n\t]+/g, ' ').slice(0, limit) : undefined;
+}
+
+function safeDiagnosticMessage(value) {
+  if (typeof value !== 'string') return undefined;
+  return boundedText(value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/((?:api[_ -]?(?:key|secret)|authorization|access[_ -]?token|refresh[_ -]?token|password|client[_ -]?secret)\s*[:=]\s*)["']?[^,\s"'&]+/gi, '$1[REDACTED]')
+    .replace(/([?&](?:api[_-]?key|api[_-]?secret|token|access_token|refresh_token|signature|authorization)=)[^&\s]+/gi, '$1[REDACTED]'), 400);
+}
+
+function appendDiagnostic(record) {
+  const entry = {
+    time: new Date().toISOString(),
+    source: boundedText(record?.source, 32) || 'app',
+    type: boundedText(record?.type, 32) || 'event',
+    name: boundedText(record?.name, 120),
+    target: boundedText(record?.target, 160),
+    status: boundedText(record?.status, 16),
+    message: safeDiagnosticMessage(record?.message),
+    durationMs: Number.isFinite(record?.durationMs) ? Math.max(0, Math.round(record.durationMs)) : undefined,
+  };
+  diagnosticsEntries.push(entry);
+  if (diagnosticsEntries.length > DIAGNOSTICS_LIMIT) diagnosticsEntries.splice(0, diagnosticsEntries.length - DIAGNOSTICS_LIMIT);
+  if (diagnosticsWindow && !diagnosticsWindow.isDestroyed()) diagnosticsWindow.webContents.send('diagnostics:entry', entry);
+
+  diagnosticsWriteQueue = diagnosticsWriteQueue.then(async () => {
+    await fs.mkdir(path.dirname(diagnosticsFile), { recursive: true });
+    const current = await fs.stat(diagnosticsFile).catch(error => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (current && current.size >= DIAGNOSTICS_FILE_LIMIT) {
+      const previous = `${diagnosticsFile}.1`;
+      await fs.rm(previous, { force: true });
+      await fs.rename(diagnosticsFile, previous);
+    }
+    await fs.appendFile(diagnosticsFile, `${JSON.stringify(entry)}\n`, 'utf8');
+  }).catch(error => {
+    console.error('Could not persist Omega diagnostic event:', error);
+  });
+  return entry;
+}
+
+function createDiagnosticsWindow() {
+  if (diagnosticsWindow && !diagnosticsWindow.isDestroyed()) {
+    diagnosticsWindow.show();
+    diagnosticsWindow.focus();
+    return true;
+  }
+
+  const win = new BrowserWindow({
+    width: 1040,
+    height: 680,
+    minWidth: 720,
+    minHeight: 420,
+    title: 'Omega Diagnostic Console',
+    backgroundColor: '#101720',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  diagnosticsWindow = win;
+  win.on('closed', () => {
+    appendDiagnostic({ source: 'electron-main', type: 'window', name: 'diagnostics.closed' });
+    if (diagnosticsWindow === win) diagnosticsWindow = null;
+  });
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Omega Diagnostic Console</title>
+  <style>
+    :root{color-scheme:dark;font:13px/1.4 "Segoe UI",sans-serif;background:#101720;color:#e6edf5}
+    *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column}
+    header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid #2b3746;background:#17212e}
+    h1{font-size:15px;margin:0}.hint{color:#9aabba;font-size:11px;flex:1}
+    button{background:#26364a;color:#e6edf5;border:1px solid #43566e;border-radius:4px;padding:6px 10px;cursor:pointer}
+    #rows{overflow:auto;flex:1;padding:6px 10px;font:12px/1.45 Consolas,monospace}
+    .row{display:grid;grid-template-columns:155px 100px 115px 1fr;gap:10px;padding:4px 6px;border-bottom:1px solid #202c39;white-space:pre-wrap;overflow-wrap:anywhere}
+    .time,.source{color:#93a7bd}.status{color:#7dd3a5}.error{color:#ff7b86}
+    footer{padding:7px 12px;color:#9aabba;border-top:1px solid #2b3746;font-size:11px;overflow-wrap:anywhere}
+  </style></head><body><header><h1>Omega Diagnostic Console</h1><span class="hint">Local clicks, dialogs, window lifecycle, and IPC method trace. Typed values and request payloads are not recorded.</span><button id="pause">Pause</button><button id="bottom">Latest</button></header><main id="rows" aria-live="polite"></main><footer id="location">Loading local log location…</footer>
+  <script>
+    const rows=document.getElementById('rows');let paused=false;let queued=[];
+    function add(entry){const row=document.createElement('div');row.className='row';const time=document.createElement('span');time.className='time';time.textContent=entry.time||'';const source=document.createElement('span');source.className='source';source.textContent=entry.source||'';const method=document.createElement('span');method.textContent=[entry.type,entry.name].filter(Boolean).join(' · ');const detail=document.createElement('span');detail.className=entry.status==='error'?'error':'status';detail.textContent=[entry.status,entry.target,entry.message,Number.isFinite(entry.durationMs)?entry.durationMs+' ms':''].filter(Boolean).join(' · ');row.append(time,source,method,detail);rows.append(row);if(!paused)rows.scrollTop=rows.scrollHeight}
+    document.getElementById('pause').addEventListener('click',event=>{paused=!paused;event.currentTarget.textContent=paused?'Resume':'Pause';if(!paused){queued.forEach(add);queued=[]}});
+    document.getElementById('bottom').addEventListener('click',()=>{rows.scrollTop=rows.scrollHeight});
+    window.velaDiagnostics.getRecent().then(result=>{result.entries.forEach(add);document.getElementById('location').textContent='Saved locally: '+result.file;});
+    window.velaDiagnostics.onEntry(entry=>{if(paused)queued.push(entry);else add(entry)});
+  </script></body></html>`;
+  void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  appendDiagnostic({ source: 'electron-main', type: 'window', name: 'diagnostics.open' });
+  return true;
+}
+
+const originalIpcHandle = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, listener) => originalIpcHandle(channel, async (...args) => {
+  if (String(channel).startsWith('diagnostics:')) return listener(...args);
+  const event = args[0];
+  const source = event?.sender === mainWindow?.webContents
+    ? 'main-window'
+    : event?.sender === pineEditorWindow?.webContents
+      ? 'pine-editor'
+      : 'renderer';
+  const startedAt = Date.now();
+  appendDiagnostic({ source, type: 'method', name: String(channel), status: 'start' });
+  try {
+    const result = await listener(...args);
+    appendDiagnostic({ source: 'electron-main', type: 'method', name: String(channel), status: 'ok', durationMs: Date.now() - startedAt });
+    return result;
+  } catch (error) {
+    appendDiagnostic({
+      source: 'electron-main',
+      type: 'method',
+      name: String(channel),
+      status: 'error',
+      message: error instanceof Error ? `${error.name}: ${error.message}` : 'Unknown error',
+      durationMs: Date.now() - startedAt,
+    });
+    throw error;
+  }
+});
+
+ipcMain.on('diagnostics:event', (event, record) => {
+  const trusted = [mainWindow, pineEditorWindow, diagnosticsWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
+  if (!trusted || event.senderFrame !== event.sender.mainFrame) return;
+  appendDiagnostic(record);
+});
+
+ipcMain.handle('diagnostics:get-recent', async (event) => {
+  const trusted = [mainWindow, pineEditorWindow, diagnosticsWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
+  if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Diagnostics are available only to Omega windows.');
+  await diagnosticsReady;
+  return { entries: diagnosticsEntries, file: diagnosticsFile };
+});
+
+ipcMain.handle('diagnostics:open', (event) => {
+  const trusted = [mainWindow, pineEditorWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
+  if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Diagnostics are available only to Omega windows.');
+  return createDiagnosticsWindow();
+});
+
+app.on('browser-window-created', (_event, window) => {
+  const title = window.getTitle() || 'Untitled window';
+  appendDiagnostic({ source: 'electron-main', type: 'window', name: `created: ${title}` });
+  for (const eventName of ['show', 'hide', 'focus', 'blur', 'minimize', 'restore', 'maximize', 'unmaximize', 'close']) {
+    window.on(eventName, () => appendDiagnostic({
+      source: 'electron-main',
+      type: 'window',
+      name: `${eventName}: ${title}`,
+    }));
+  }
+  window.on('closed', () => appendDiagnostic({
+    source: 'electron-main',
+    type: 'window',
+    name: `closed: ${title}`,
+  }));
+});
+
 cTrader.on('quote', (quote) => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ctrader:quote', quote);
 });
-alpaca.on('bar', (bar) => {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('alpaca:bar', bar);
-});
-alpaca.on('status', (state) => {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('alpaca:status', state);
-});
-
 function getBrokerSdk() {
   brokerSdk ??= require('@luxalgo/broker-sdk');
   return brokerSdk;
@@ -50,7 +236,11 @@ function assertTrustedBrokerRequest(event) {
   }
   const url = event.senderFrame.url;
   const appFileUrl = pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
-  const isDevUrl = /^http:\/\/(localhost|127\.0\.0\.1):5173(?:\/|$)/.test(url);
+  let isDevUrl = false;
+  try {
+    const parsed = new URL(url);
+    isDevUrl = parsed.protocol === 'http:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+  } catch {}
   if (!url.startsWith(appFileUrl) && !isDevUrl) throw new Error('Broker access is blocked for this page.');
 }
 
@@ -258,9 +448,22 @@ ipcMain.handle('broker:connect-read-only', async (event, request) => {
   const brokerInfo = sdk.listBrokers().find(({ id }) => id === request.brokerId);
   if (!brokerInfo) throw new Error('That broker is not supported by the installed SDK.');
 
+  const suppliedCredentials = { ...request.credentials };
+  if (request.brokerId === 'alpaca') {
+    const apiKey = suppliedCredentials.apiKey;
+    const apiSecret = suppliedCredentials.apiSecret;
+    if (!apiKey && !apiSecret) {
+      const saved = await alpaca.readBrokerCredentials();
+      if (!saved) throw new Error('Enter and save the Alpaca API key ID and secret key first.');
+      Object.assign(suppliedCredentials, saved);
+    } else if (typeof apiKey !== 'string' || typeof apiSecret !== 'string' || !apiKey.trim() || !apiSecret.trim()) {
+      throw new Error('Enter both Alpaca API credentials, or leave both blank to use the saved encrypted credentials.');
+    }
+  }
+
   const credentials = {};
   for (const field of brokerInfo.credentials) {
-    const value = request.credentials[field.key];
+    const value = suppliedCredentials[field.key];
     if (typeof value !== 'string' || !value.trim() || value.length > 4096) {
       throw new Error(`Enter a valid value for ${field.label}.`);
     }
@@ -273,6 +476,17 @@ ipcMain.handle('broker:connect-read-only', async (event, request) => {
   const snapshot = await connection.fetchSnapshot();
   activeBroker = connection;
   return toBrokerSnapshot(snapshot);
+});
+
+ipcMain.handle('broker:save-alpaca-credentials', async (event, credentials) => {
+  assertTrustedBrokerRequest(event);
+  if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) throw new Error('Enter valid Alpaca credentials.');
+  return alpaca.saveBrokerCredentials(credentials);
+});
+
+ipcMain.handle('broker:has-saved-alpaca-credentials', async (event) => {
+  assertTrustedBrokerRequest(event);
+  return (await alpaca.status()).configured;
 });
 
 ipcMain.handle('ctrader:authorize', async (event, credentials) => {
@@ -313,6 +527,30 @@ ipcMain.handle('broker:fetch-snapshot', async (event) => {
   assertTrustedBrokerRequest(event);
   if (!activeBroker) throw new Error('Connect to a broker first.');
   return toBrokerSnapshot(await activeBroker.fetchSnapshot());
+});
+
+ipcMain.handle('broker:fetch-bars', async (event, request) => {
+  assertTrustedBrokerRequest(event);
+  if (!activeBroker || activeBroker.broker !== 'alpaca' || typeof activeBroker.fetchBars !== 'function') return null;
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('Invalid Alpaca history request.');
+  }
+  if (typeof request.symbol !== 'string' || !/^[A-Z][A-Z0-9.-]{0,19}$/i.test(request.symbol.trim())) {
+    throw new Error('Enter a valid Alpaca stock ticker.');
+  }
+  const timeframes = { '1': '1m', '1m': '1m', '5': '5m', '5m': '5m', '15': '15m', '15m': '15m', '60': '1h', '1h': '1h', D: '1d', '1D': '1d', '1d': '1d' };
+  const timeframe = timeframes[String(request.timeframe).trim()];
+  if (!timeframe) throw new Error(`The Alpaca Broker SDK does not support "${request.timeframe}" bars.`);
+  const from = Number(request.from);
+  const to = Number(request.to);
+  const limit = request.limit === undefined ? 10_000 : Number(request.limit);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) {
+    throw new Error('Choose a valid Alpaca history date range.');
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) {
+    throw new Error('Alpaca Broker SDK history requests must be between 1 and 10,000 bars.');
+  }
+  return activeBroker.fetchBars(request.symbol.trim().toUpperCase(), { timeframe, from, to, limit });
 });
 
 ipcMain.handle('broker:disconnect', (event) => {
@@ -360,46 +598,6 @@ ipcMain.handle('mt5:info', async (event, ticker) => {
 ipcMain.handle('mt5:disconnect', async (event) => {
   assertTrustedBrokerRequest(event);
   return mt5.disconnect();
-});
-
-ipcMain.handle('alpaca:connect', async (event, credentials) => {
-  assertTrustedBrokerRequest(event);
-  if (credentials !== undefined && (!credentials || typeof credentials !== 'object' || Array.isArray(credentials))) {
-    throw new Error('Invalid Alpaca credentials.');
-  }
-  return alpaca.connect(credentials ?? {});
-});
-
-ipcMain.handle('alpaca:status', async (event) => {
-  assertTrustedBrokerRequest(event);
-  return alpaca.status();
-});
-
-ipcMain.handle('alpaca:bars', async (event, request) => {
-  assertTrustedBrokerRequest(event);
-  return alpaca.bars(request);
-});
-
-ipcMain.handle('alpaca:assets', async (event) => {
-  assertTrustedBrokerRequest(event);
-  return alpaca.assets();
-});
-
-ipcMain.handle('alpaca:subscribe', async (event, request) => {
-  assertTrustedBrokerRequest(event);
-  if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Invalid Alpaca subscription.');
-  return alpaca.subscribe(request.ticker, request.timeframe);
-});
-
-ipcMain.handle('alpaca:unsubscribe', async (event, subscriptionId) => {
-  assertTrustedBrokerRequest(event);
-  if (typeof subscriptionId !== 'string') throw new Error('Invalid Alpaca subscription.');
-  return alpaca.unsubscribe(subscriptionId);
-});
-
-ipcMain.handle('alpaca:disconnect', async (event) => {
-  assertTrustedBrokerRequest(event);
-  return alpaca.disconnect();
 });
 
 function closeSplash() {
@@ -488,7 +686,7 @@ function createWindow() {
   const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
 
   if (isDev) {
-    win.loadURL('http://localhost:5173');
+    win.loadURL(devServerUrl);
   } else {
     win.loadFile(path.join(__dirname, '../dist/index.html'));
   }
@@ -523,7 +721,7 @@ function createPineEditorWindow() {
 
   const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
   if (isDev) {
-    void win.loadURL('http://localhost:5173/pine-editor.html');
+    void win.loadURL(new URL('pine-editor.html', `${devServerUrl}/`).href);
   } else {
     void win.loadFile(path.join(__dirname, '../dist/pine-editor.html'));
   }

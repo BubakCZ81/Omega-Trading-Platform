@@ -42,6 +42,33 @@ import { initializeVisualBacktest } from './visualBacktest';
 const startupScreen = document.getElementById('omega-startup-screen');
 const startupStatus = document.getElementById('omega-startup-status');
 
+type DiagnosticEntry = {
+  time: string;
+  source?: string;
+  type?: string;
+  name?: string;
+  target?: string;
+  status?: string;
+  message?: string;
+  durationMs?: number;
+};
+
+declare global {
+  interface Window {
+    velaDiagnostics?: {
+      openConsole(): Promise<boolean>;
+      getRecent(): Promise<{ entries: DiagnosticEntry[]; file: string }>;
+      onEntry(callback: (entry: DiagnosticEntry) => void): () => void;
+    };
+  }
+}
+
+document.getElementById('diagnostics-console-toggle')?.addEventListener('click', () => {
+  void window.velaDiagnostics?.openConsole().catch(error => {
+    console.error('Could not open the diagnostic console:', error);
+  });
+});
+
 function setStartupStatus(message: string, state?: 'error'): void {
   if (startupStatus) {
     startupStatus.textContent = message;
@@ -168,42 +195,6 @@ if ('__TAURI_INTERNALS__' in window) {
     },
   };
 
-  type AlpacaBridgeApi = NonNullable<Window['velaAlpaca']>;
-  const alpacaBars = new Set<Parameters<AlpacaBridgeApi['onBar']>[0]>();
-  const alpacaStatuses = new Set<Parameters<AlpacaBridgeApi['onStatus']>[0]>();
-  const alpacaEventsReady = Promise.all([
-    listen<Parameters<AlpacaBridgeApi['onBar']>[0] extends (bar: infer Bar) => void ? Bar : never>('alpaca:bar', event => {
-      for (const callback of alpacaBars) callback(event.payload);
-    }),
-    listen<Parameters<AlpacaBridgeApi['onStatus']>[0] extends (state: infer State) => void ? State : never>('alpaca:status', event => {
-      for (const callback of alpacaStatuses) callback(event.payload);
-    }),
-  ]).catch(error => {
-    console.error('Could not initialize Alpaca market-data events:', error);
-    throw error;
-  });
-  window.velaAlpaca = {
-    connect: credentials => invoke<Awaited<ReturnType<AlpacaBridgeApi['connect']>>>('alpaca_connect', {
-      keyId: credentials?.keyId ?? '',
-      secretKey: credentials?.secretKey ?? '',
-    }).then(async result => {
-      await alpacaEventsReady;
-      return result;
-    }),
-    status: () => invoke<Awaited<ReturnType<AlpacaBridgeApi['status']>>>('alpaca_status'),
-    bars: request => invoke<Awaited<ReturnType<AlpacaBridgeApi['bars']>>>('alpaca_bars', request),
-    subscribe: (ticker, timeframe) => invoke<Awaited<ReturnType<AlpacaBridgeApi['subscribe']>>>('alpaca_subscribe', { ticker, timeframe }),
-    unsubscribe: subscriptionId => invoke<Awaited<ReturnType<AlpacaBridgeApi['unsubscribe']>>>('alpaca_unsubscribe', { subscriptionId }),
-    disconnect: () => invoke<Awaited<ReturnType<AlpacaBridgeApi['disconnect']>>>('alpaca_disconnect'),
-    onBar: callback => {
-      alpacaBars.add(callback);
-      return () => alpacaBars.delete(callback);
-    },
-    onStatus: callback => {
-      alpacaStatuses.add(callback);
-      return () => alpacaStatuses.delete(callback);
-    },
-  };
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
   const editorWindowLabel = 'omega-pine-editor-window';
   const editorEvents = {
@@ -310,7 +301,7 @@ function loadStartupModule<T>(id: OptionalModuleId, loader: () => Promise<T>): P
 const [
   brokerModule,
   mt5FeedModule,
-  alpacaFeedModule,
+  alpacaSdkFeedModule,
   pineEditorModule,
   pineTsModule,
   indicatorBrowserModule,
@@ -331,14 +322,66 @@ function hideFeatureElements(enabled: boolean, ...ids: string[]) {
 
 hideFeatureElements(brokerModule.enabled, 'broker-toggle', 'broker-modal');
 hideFeatureElements(mt5FeedModule.enabled, 'mt5-feed-toggle', 'mt5-feed-modal');
-hideFeatureElements(alpacaFeedModule.enabled, 'alpaca-feed-toggle', 'alpaca-feed-modal');
-hideFeatureElements(mt5FeedModule.enabled || alpacaFeedModule.enabled, 'local-feeds-toggle', 'local-feeds-modal');
+hideFeatureElements(mt5FeedModule.enabled, 'local-feeds-toggle', 'local-feeds-modal');
 hideFeatureElements(backtestModule.enabled, 'backtest-toggle');
 hideFeatureElements(pineEditorModule.enabled, 'editor-toggle-btn', 'editor-drawer', 'resize-handle');
 hideFeatureElements(updateCheckerModule.enabled, 'check-updates');
 const connectionLatency = document.getElementById('connection-latency');
 const tradingAccountMode = document.getElementById('trading-account-mode');
 const tradingAccountDetail = document.getElementById('trading-account-detail');
+const tradingAccountSelect = document.getElementById('trading-account-select') as HTMLSelectElement | null;
+type TradingAccountChoice = { id: string; label: string; mode: string; detail: string };
+const LOCAL_DEMO_ACCOUNT: TradingAccountChoice = {
+  id: 'local-demo', label: 'DEMO · Local account', mode: 'DEMO', detail: 'Local account',
+};
+const availableTradingAccounts = new Map<string, TradingAccountChoice>([[LOCAL_DEMO_ACCOUNT.id, LOCAL_DEMO_ACCOUNT]]);
+const TRADING_ACCOUNT_STORAGE_KEY = 'omega.selected-trading-account';
+function selectTradingAccount(id: string, persist = true) {
+  const account = availableTradingAccounts.get(id) ?? LOCAL_DEMO_ACCOUNT;
+  if (tradingAccountSelect) tradingAccountSelect.value = account.id;
+  if (tradingAccountMode) tradingAccountMode.textContent = account.mode;
+  if (tradingAccountDetail) tradingAccountDetail.textContent = account.detail;
+  if (persist) localStorage.setItem(TRADING_ACCOUNT_STORAGE_KEY, account.id);
+  document.dispatchEvent(new CustomEvent('omega:trading-account-selected', {
+    detail: {
+      id: account.id,
+      provider: account.id.includes(':') ? account.id.slice(0, account.id.indexOf(':')).toLowerCase() : '',
+    },
+  }));
+}
+function renderTradingAccounts() {
+  if (!tradingAccountSelect) return;
+  const selected = localStorage.getItem(TRADING_ACCOUNT_STORAGE_KEY) || LOCAL_DEMO_ACCOUNT.id;
+  tradingAccountSelect.replaceChildren(...[...availableTradingAccounts.values()].map(account => {
+    const option = document.createElement('option');
+    option.value = account.id;
+    option.textContent = account.label;
+    return option;
+  }));
+  selectTradingAccount(availableTradingAccounts.has(selected) ? selected : LOCAL_DEMO_ACCOUNT.id, false);
+}
+tradingAccountSelect?.addEventListener('change', () => selectTradingAccount(tradingAccountSelect.value));
+document.addEventListener('omega:trading-account-available', event => {
+  const account = (event as CustomEvent<TradingAccountChoice>).detail;
+  if (!account?.id || !account.label || !account.mode || !account.detail) return;
+  availableTradingAccounts.set(account.id, account);
+  renderTradingAccounts();
+});
+document.addEventListener('omega:trading-account-unavailable', event => {
+  const id = (event as CustomEvent<string>).detail;
+  if (!id || id === LOCAL_DEMO_ACCOUNT.id) return;
+  availableTradingAccounts.delete(id);
+  renderTradingAccounts();
+});
+document.addEventListener('omega:trading-broker-disconnected', event => {
+  const brokerId = (event as CustomEvent<string>).detail;
+  if (!brokerId) return;
+  for (const id of availableTradingAccounts.keys()) {
+    if (id.startsWith(`${brokerId}:`)) availableTradingAccounts.delete(id);
+  }
+  renderTradingAccounts();
+});
+renderTradingAccounts();
 document.addEventListener('omega:connection-latency', (event) => {
   const milliseconds = (event as CustomEvent<number>).detail;
   if (!connectionLatency || !Number.isFinite(milliseconds)) return;
@@ -958,7 +1001,7 @@ workspaceInitialized = true;
 workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
 
 mt5FeedModule.value?.initializeMt5Feed(() => workspace);
-alpacaFeedModule.value?.initializeAlpacaFeed(() => workspace);
+alpacaSdkFeedModule.value?.initializeAlpacaSdkFeed(() => workspace);
 initializeCTraderFeed(() => workspace);
 
 const localFeedsModal = document.getElementById('local-feeds-modal');
@@ -977,9 +1020,8 @@ localFeedsModal?.addEventListener('click', event => {
   if (event.target === localFeedsModal) closeLocalFeeds();
 });
 document.querySelectorAll<HTMLButtonElement>('[data-local-feed]').forEach(button => {
-  const feedId = button.dataset.localFeed === 'mt5' ? 'mt5-feed-toggle' : 'alpaca-feed-toggle';
-  const trigger = document.getElementById(feedId) as HTMLButtonElement | null;
-  const enabled = button.dataset.localFeed === 'mt5' ? mt5FeedModule.enabled : alpacaFeedModule.enabled;
+  const trigger = document.getElementById('mt5-feed-toggle') as HTMLButtonElement | null;
+  const enabled = mt5FeedModule.enabled;
   if (!trigger || !enabled) button.hidden = true;
   button.addEventListener('click', () => {
     trigger?.click();
@@ -2209,6 +2251,17 @@ const cellControlsManager = new ChartCellControlsManager({
   getGroupForCell: (cellId: string) => groupByCellId[cellId] ?? '',
   onSetCellGroup: (cellId: string, group: string) => setCellGroup(cellId, group),
 });
+chartGridHost.addEventListener('click', event => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const symbolButton = target.closest<HTMLElement>('.vela-widget-symbol, .vela-mb-symbol');
+  if (!symbolButton) return;
+  const activeCell = workspace.active;
+  if (!activeCell) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  cellControlsManager.openSymbolPickerForCell(activeCell.id, symbolButton);
+}, true);
 
 function keyboardTargetAcceptsText(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;

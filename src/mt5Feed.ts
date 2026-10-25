@@ -444,6 +444,7 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
   const provider = window.velaMt5 ? new Mt5DataProvider(window.velaMt5) : null;
   let connected = false;
   let loadedSymbols: Mt5Symbol[] = [];
+  let tradingAccountId: string | null = null;
   const setStatus = (message: string, isError = false) => {
     status.textContent = message;
     status.dataset.state = isError ? 'error' : 'info';
@@ -536,6 +537,15 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
       provider.setSymbols(connection.symbols);
       connected = true;
       await registerWorkspace();
+      tradingAccountId = `mt5:${connection.server || connection.terminal || 'terminal'}`;
+      document.dispatchEvent(new CustomEvent('omega:trading-account-available', {
+        detail: {
+          id: tradingAccountId,
+          label: `MT5 · ${connection.server || connection.company || 'Terminal'}`,
+          mode: 'CONNECTED',
+          detail: 'MT5 market data · read-only',
+        },
+      }));
       connectButton.hidden = true;
       disconnectButton.hidden = false;
       const sourceStatus = connection.symbols.length
@@ -562,6 +572,8 @@ export function initializeMt5Feed(getWorkspace: () => VelaWorkspace): void {
       provider?.disconnect();
       await window.velaMt5.disconnect();
       connected = false;
+      if (tradingAccountId) document.dispatchEvent(new CustomEvent('omega:trading-account-unavailable', { detail: tradingAccountId }));
+      tradingAccountId = null;
       connectButton.hidden = false;
       disconnectButton.hidden = true;
       setStatus('MetaTrader data feed disconnected. The chart provider is no longer registered.');
