@@ -513,8 +513,6 @@ declare global {
     velaPineExport?: PineExportBridge;
     velaApp?: {
       ready(): void;
-      getZoomFactor(): Promise<number>;
-      setZoomFactor(factor: number): Promise<number>;
     };
   }
 }
@@ -570,18 +568,10 @@ if (chartWrapper && chartSurface && chartStage) {
   window.addEventListener('resize', preserveChartSize);
 }
 
-async function applyPlatformZoom(nextZoom: number): Promise<void> {
+function applyPlatformZoom(nextZoom: number): void {
   platformZoom = Math.round(Math.min(PLATFORM_ZOOM_MAX, Math.max(PLATFORM_ZOOM_MIN, nextZoom)) * 100) / 100;
   localStorage.setItem(PLATFORM_ZOOM_STORAGE_KEY, String(platformZoom));
   updatePlatformZoomControls();
-  if (window.velaApp) {
-    try {
-      platformZoom = await window.velaApp.setZoomFactor(platformZoom);
-      localStorage.setItem(PLATFORM_ZOOM_STORAGE_KEY, String(platformZoom));
-    } catch (error) {
-      console.warn('Could not persist platform zoom in the desktop shell:', error);
-    }
-  }
   applyPlatformScaleStyles(platformZoom);
   preserveChartSize();
   updatePlatformZoomControls();

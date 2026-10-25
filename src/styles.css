@@ -157,8 +157,8 @@ input, textarea, select, [contenteditable="true"],
       #app-container {
         display: flex;
         flex-direction: column;
-        width: calc(100% / var(--omega-platform-scale));
-        height: calc(100% / var(--omega-platform-scale));
+        width: 100%;
+        height: 100%;
         overflow: hidden;
         position: relative;
         /* Do not use transform for platform zoom. Vela portals its context menu
@@ -187,7 +187,7 @@ input, textarea, select, [contenteditable="true"],
       #chart {
         flex: 1 1 0%;
         min-height: 0;
-        width: calc(100% * var(--omega-platform-scale));
+        width: 100%;
         position: relative;
         z-index: 0;
       }
@@ -207,7 +207,9 @@ input, textarea, select, [contenteditable="true"],
         height: 100%;
       }
       #chart-tabs-bar {
-        height: 30px; min-height: 30px; padding: 0 var(--space-sm); gap: var(--space-xs);
+        height: calc(30px / var(--omega-platform-scale));
+        min-height: calc(30px / var(--omega-platform-scale));
+        padding: 0 var(--space-sm); gap: var(--space-xs);
         background: var(--omega-surface); border-bottom: 1px solid var(--omega-border);
         display: flex; align-items: stretch; overflow: hidden;
       }
@@ -781,7 +783,8 @@ input, textarea, select, [contenteditable="true"],
 
       /* Bottom Dock Bar — FIX: added position: relative so z-index works */
       #bottom-bar {
-        height: 34px;
+        height: calc(34px / var(--omega-platform-scale));
+        min-height: calc(34px / var(--omega-platform-scale));
         background: var(--omega-surface);
         border-top: 1px solid var(--omega-border);
         display: flex;
@@ -793,6 +796,13 @@ input, textarea, select, [contenteditable="true"],
         z-index: 40;
       }
       .bottom-bar-left { display: flex; align-items: center; gap: 8px; }
+      .bottom-bar-left .connection-latency {
+        margin-left: 4px;
+        padding-left: 10px;
+        border-left: 1px solid var(--omega-border);
+        font-size: 12px;
+      }
+      #bottom-clock { font-size: 12px; }
 
       .bottom-tab-btn {
         background: var(--omega-elevated); border: 1px solid var(--omega-border); border-radius: 4px;
@@ -808,7 +818,8 @@ input, textarea, select, [contenteditable="true"],
 
       /* Top Toolbar — sits above the chart inside the chart-wrapper */
       #top-toolbar {
-        height: 36px;
+        height: calc(36px / var(--omega-platform-scale));
+        min-height: calc(36px / var(--omega-platform-scale));
         background: var(--omega-surface);
         border-bottom: 1px solid var(--omega-border);
         display: flex;
@@ -855,9 +866,10 @@ input, textarea, select, [contenteditable="true"],
       #top-toolbar .toolbar-control-zone {
         display: flex;
         align-items: center;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: var(--space-md);
-        width: fit-content;
+        width: max-content;
+        flex: 0 0 auto;
         min-height: 28px;
         padding: 4px 6px;
         background: var(--omega-elevated);
@@ -944,8 +956,17 @@ input, textarea, select, [contenteditable="true"],
         outline: 2px solid var(--omega-accent);
         outline-offset: 2px;
       }
-      #top-toolbar { flex-wrap: wrap; min-height: 36px; height: auto; padding-top: 4px; padding-bottom: 4px; }
-      #top-toolbar .toolbar-control-zone { max-width: 100%; }
+      #top-toolbar {
+        flex-wrap: nowrap;
+        height: calc(36px / var(--omega-platform-scale));
+        min-height: calc(36px / var(--omega-platform-scale));
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: thin;
+        padding-top: 4px;
+        padding-bottom: 4px;
+      }
+      #top-toolbar .toolbar-control-zone { max-width: none; }
       #workspace-profile-name { width: 100px; }
       #update-info-modal {
         position: fixed; inset: 36px 0 28px; z-index: 100000000;
@@ -1728,6 +1749,10 @@ body:not([data-theme="light"]) .vela-workspace .vela-bb-range:hover,
 body:not([data-theme="light"]) .vela-workspace .vela-bb-settings:hover {
   color: #f8fafc;
   background-color: #283245;
+}
+
+body:not([data-theme="light"]) .vela-menu-item .vela-icon {
+  color: #d7e5f7;
 }
 
 /* Timeframe selection belongs in the top toolbar; hide Vela's duplicate
