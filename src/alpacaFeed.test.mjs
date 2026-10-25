@@ -27,7 +27,7 @@ test('requests the Broker SDK supported minute, hourly, and daily timeframes', a
   ]);
 });
 
-test('uses the Broker SDK date-range API and restricts unsupported timeframes', async () => {
+test('uses the Broker SDK date-range API and rejects non-time-based intervals', async () => {
   let request;
   const provider = new AlpacaDataProvider({
     fetchHistoricalBars: async value => {
@@ -41,10 +41,10 @@ test('uses the Broker SDK date-range API and restricts unsupported timeframes', 
   await provider.getBars('AAPL', '1D', { limit: 10 });
   assert.equal(request.timeframe, '1d');
   assert.equal(request.symbol, 'AAPL');
-  assert.equal(request.limit, 10);
+  assert.equal(request.limit, 31);
   assert.ok(request.to >= now);
   assert.equal(request.from, request.to - Math.ceil(10 * 24 * 60 * 60_000 * 1.5) - 14 * 24 * 60 * 60_000);
-  await assert.rejects(provider.getBars('AAPL', '2D', { limit: 10 }), /Broker SDK does not support/);
+  await assert.rejects(provider.getBars('AAPL', 'T10', { limit: 10 }), /cannot map chart timeframe/);
 });
 
 test('extends default minute history across market closures but preserves explicit ranges', async () => {
@@ -65,6 +65,54 @@ test('extends default minute history across market closures but preserves explic
   assert.equal(requests[0].from, to - 500 * 60_000 * 6 - 3 * 24 * 60 * 60_000);
   assert.equal(requests[1].from, to - 500 * 5 * 60_000 * 6 - 3 * 24 * 60 * 60_000);
   assert.equal(requests[2].from, to - 10 * 60_000);
+});
+
+test('resamples unsupported intraday chart intervals from the nearest supported SDK interval', async () => {
+  const minute = 60_000;
+  const start = Date.UTC(2026, 9, 26, 14, 30);
+  const sourceBars = Array.from({ length: 6 }, (_, index) => ({
+    time: start + index * minute,
+    open: 100 + index,
+    high: 102 + index,
+    low: 99 + index,
+    close: 101 + index,
+    volume: 10,
+  }));
+  const requests = [];
+  const provider = new AlpacaDataProvider({
+    fetchHistoricalBars: async request => {
+      requests.push(request);
+      return sourceBars;
+    },
+  });
+  provider.setConnected(true);
+
+  const bars = await provider.getBars('AAPL', '3', { from: start, to: start + 6 * minute, limit: 2 });
+
+  assert.equal(requests[0].timeframe, '1m');
+  assert.deepEqual(bars, [
+    { time: start, open: 100, high: 104, low: 99, close: 103, volume: 30 },
+    { time: start + 3 * minute, open: 103, high: 107, low: 102, close: 106, volume: 30 },
+  ]);
+});
+
+test('resamples multi-hour, multi-day, weekly, and monthly chart intervals', async () => {
+  const requests = [];
+  const provider = new AlpacaDataProvider({
+    fetchHistoricalBars: async request => {
+      requests.push(request);
+      return [];
+    },
+  });
+  provider.setConnected(true);
+  const now = Date.UTC(2026, 9, 26, 14);
+
+  await provider.getBars('AAPL', '120', { to: now, limit: 10 });
+  await provider.getBars('AAPL', '2D', { to: now, limit: 10 });
+  await provider.getBars('AAPL', 'W', { to: now, limit: 10 });
+  await provider.getBars('AAPL', 'M', { to: now, limit: 10 });
+
+  assert.deepEqual(requests.map(request => request.timeframe), ['1h', '1d', '1d', '1d']);
 });
 
 test('returns minute bars from the Broker SDK unchanged', async () => {
