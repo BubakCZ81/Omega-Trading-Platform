@@ -104,6 +104,25 @@ function appendDiagnostic(record) {
   return entry;
 }
 
+function describeBarFetch(request, bars) {
+  if (!request || typeof request !== 'object') return 'Invalid Alpaca history request metadata.';
+  if (bars === null) return 'No bars returned: there is no active Alpaca history connection.';
+  if (!Array.isArray(bars)) return `Invalid bars response: expected an array, received ${typeof bars}.`;
+  const isoTime = value => {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : 'invalid timestamp';
+  };
+  const symbol = typeof request.symbol === 'string' ? request.symbol.trim().toUpperCase() : 'unknown symbol';
+  const timeframe = typeof request.timeframe === 'string' ? request.timeframe.trim() : 'unknown timeframe';
+  const first = Number.isFinite(bars[0]?.time) ? isoTime(bars[0].time) : null;
+  const lastBar = bars[bars.length - 1];
+  const last = Number.isFinite(lastBar?.time) ? isoTime(lastBar.time) : null;
+  const requestFrom = Number.isFinite(request.from) ? isoTime(request.from) : 'unspecified';
+  const requestTo = Number.isFinite(request.to) ? isoTime(request.to) : 'unspecified';
+  const returnedRange = first && last ? `, ${first} to ${last}` : '';
+  return `${symbol} ${timeframe}: ${bars.length} bars for ${requestFrom} to ${requestTo}${returnedRange}`;
+}
+
 function createDiagnosticsWindow() {
   if (diagnosticsWindow && !diagnosticsWindow.isDestroyed()) {
     diagnosticsWindow.show();
@@ -170,7 +189,16 @@ ipcMain.handle = (channel, listener) => originalIpcHandle(channel, async (...arg
   appendDiagnostic({ source, type: 'method', name: String(channel), status: 'start' });
   try {
     const result = await listener(...args);
-    appendDiagnostic({ source: 'electron-main', type: 'method', name: String(channel), status: 'ok', durationMs: Date.now() - startedAt });
+    const barFetch = channel === 'broker:fetch-bars';
+    const emptyBars = barFetch && (!Array.isArray(result) || result.length === 0);
+    appendDiagnostic({
+      source: 'electron-main',
+      type: 'method',
+      name: String(channel),
+      status: emptyBars ? 'empty' : 'ok',
+      message: barFetch ? describeBarFetch(args[1], result) : undefined,
+      durationMs: Date.now() - startedAt,
+    });
     return result;
   } catch (error) {
     appendDiagnostic({
