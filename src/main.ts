@@ -36,6 +36,7 @@ import { bootWithOptionalModules, loadOptionalModule, type OptionalModule, type 
 import { createReplayAwareEngine } from './replayStreamingEngine';
 import { getMarketFlowStyle, refreshMarketFlowStyles, setMarketFlowStyle } from './marketFlowPane';
 import { attachFuturesMonthBoundaries } from './futuresMonthBoundaries';
+import { initializeVisualBacktest } from './visualBacktest';
 // createWindow will be loaded lazily inside openTauriStandaloneEditor
 
 const startupScreen = document.getElementById('omega-startup-screen');
@@ -2415,6 +2416,25 @@ chartTabsAdd.addEventListener('click', addChartTab);
 workspace.on('cell:active', renderChartTabs);
 workspace.on('cell:created', renderChartTabs);
 renderChartTabs();
+
+initializeVisualBacktest(
+  workspace as any,
+  () => {
+    const originalCell = workspace.active;
+    addChartTab();
+    const testCell = workspace.active;
+    if (!testCell || testCell.id === originalCell.id) return null;
+    testCell.host.dataset.omegaVisualBacktest = 'true';
+    renderChartTabs();
+    return testCell as any;
+  },
+  () => {
+    const button = [...document.querySelectorAll<HTMLButtonElement>('.vela-widget-action-left, .vela-widget-action')]
+      .find(item => item.textContent?.trim() === 'Indicators');
+    button?.click();
+  },
+  () => document.getElementById('editor-toggle-btn')?.click(),
+);
 
 function initializePaperTradeDrag() {
   const widget = document.getElementById('chart-paper-trade-controls');
