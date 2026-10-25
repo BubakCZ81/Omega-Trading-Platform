@@ -49,6 +49,32 @@ export class BacktestHistoryProvider implements DataProvider {
   }
 }
 
+export async function registerBacktestHistoryProvider(
+  registry: {
+    registerProvider: (name: string, provider: DataProvider) => unknown;
+    unregisterProvider: (name: string) => unknown;
+    ready: () => Promise<void>;
+  },
+  source: DataProvider,
+  providerName: string,
+  bars: OHLCV[],
+  isCurrent: () => boolean,
+): Promise<BacktestHistoryProvider | null> {
+  const provider = new BacktestHistoryProvider(source, providerName, bars);
+  registry.registerProvider(providerName, provider);
+  try {
+    await registry.ready();
+  } catch (error) {
+    registry.unregisterProvider(providerName);
+    throw error;
+  }
+  if (!isCurrent()) {
+    registry.unregisterProvider(providerName);
+    return null;
+  }
+  return provider;
+}
+
 export async function loadBacktestHistory(
   provider: DataProvider,
   ticker: string,

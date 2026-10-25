@@ -1,7 +1,7 @@
 import './visualBacktest.css';
 import { calculateBacktestAnalytics, type BacktestAnalytics } from './backtestStats';
 import type { DataProvider, OHLCV, StrategyState, StrategyTrade } from '@luxalgo/vela';
-import { BACKTEST_PROVIDER_PREFIX, BacktestHistoryProvider, loadBacktestHistory } from './backtestHistory';
+import { BACKTEST_PROVIDER_PREFIX, loadBacktestHistory, registerBacktestHistoryProvider } from './backtestHistory';
 
 type VisualChartCell = {
   id: string;
@@ -138,6 +138,7 @@ export function initializeVisualBacktest(
   let replayEndTime: number | null = null;
   let renderRevision = 0;
   let startRevision = 0;
+  let startRequestInFlight = false;
   let backtestProviderRevision = 0;
   let activeBacktestProviderName: string | null = null;
 
@@ -276,7 +277,6 @@ export function initializeVisualBacktest(
   });
   query<HTMLButtonElement>('close').addEventListener('click', () => {
     ++startRevision;
-    start.disabled = false;
     workspace.replay.stop();
     pausePlayback();
     root.hidden = true;
@@ -304,12 +304,14 @@ export function initializeVisualBacktest(
     if (!testCell) { status.textContent = 'No free chart tab is available for Visual Backtest.'; return; }
     const ticker = symbol.value.trim().toUpperCase();
     if (!ticker) { status.textContent = 'Enter an asset symbol.'; return; }
+    if (startRequestInFlight) return;
     const requestRevision = ++startRevision;
+    startRequestInFlight = true;
     replayEndTime = endTime;
-    workspace.setActiveCell(testCell.id);
-    pausePlayback();
     start.disabled = true; status.textContent = 'Loading historical data…';
     try {
+      workspace.setActiveCell(testCell.id);
+      pausePlayback();
       const marketSymbol = feed.value ? `${feed.value}:${ticker}` : ticker;
       const resolved = testCell.chart.data.resolve(marketSymbol);
       if (!resolved?.provider || !resolved.ticker) {
@@ -329,17 +331,24 @@ export function initializeVisualBacktest(
       if (!bars?.length) {
         throw new Error(`No candles were returned for ${ticker} in the selected period. Check the feed, symbol, date range, and historical-data access.`);
       }
-      const previousProviderName = activeBacktestProviderName;
       const backtestProviderName = `${BACKTEST_PROVIDER_PREFIX}_${++backtestProviderRevision}`;
-      testCell.chart.data.registerProvider(backtestProviderName, new BacktestHistoryProvider(provider, backtestProviderName, bars));
-      await testCell.chart.data.ready();
-      if (requestRevision !== startRevision) return;
+      const registeredProvider = await registerBacktestHistoryProvider(
+        testCell.chart.data,
+        provider,
+        backtestProviderName,
+        bars,
+        () => requestRevision === startRevision,
+      );
+      if (!registeredProvider) return;
       const backtestSymbol = `${backtestProviderName}:${resolved.ticker}`;
       await testCell.chart.setMarket({
         symbol: backtestSymbol,
         timeframe: timeframe.value,
         bars: bars.length,
       });
+      const previousProviderName = activeBacktestProviderName;
+      activeBacktestProviderName = backtestProviderName;
+      if (previousProviderName) testCell.chart.data.unregisterProvider(previousProviderName);
       if (requestRevision !== startRevision) return;
       await testCell.chart.historyComplete();
       if (requestRevision !== startRevision) return;
@@ -348,8 +357,6 @@ export function initializeVisualBacktest(
       if (!bounds || startTime > bounds.last) {
         throw new Error(`Loaded ${bars.length.toLocaleString()} candles, but none fall inside the selected period.`);
       }
-      if (previousProviderName) testCell.chart.data.unregisterProvider(previousProviderName);
-      activeBacktestProviderName = backtestProviderName;
       replayEndTime = Math.min(endTime, bounds.last);
       await workspace.replay.start({ from: startTime, cell: testCell.id });
       if (requestRevision !== startRevision) {
@@ -365,8 +372,9 @@ export function initializeVisualBacktest(
         status.textContent = `Could not start Visual Backtest: ${error instanceof Error ? error.message : String(error)}`;
       }
     } finally {
+      startRequestInFlight = false;
+      start.disabled = false;
       if (requestRevision === startRevision) {
-        start.disabled = false;
         syncReplay();
       }
     }
@@ -386,7 +394,6 @@ export function initializeVisualBacktest(
   });
   stop.addEventListener('click', () => {
     ++startRevision;
-    start.disabled = false;
     workspace.replay.stop();
     pausePlayback();
     status.textContent = 'Visual Backtest stopped.';

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BacktestHistoryProvider, loadBacktestHistory } from './backtestHistory.ts';
+import { BacktestHistoryProvider, loadBacktestHistory, registerBacktestHistoryProvider } from './backtestHistory.ts';
 
 test('loads older pages until the selected backtest range is covered', async () => {
   const requests = [];
@@ -35,4 +35,43 @@ test('uses the exact selected-range candles for initial chart history, then dele
   assert.deepEqual(await provider.getBars('AAPL', '1', { limit: 1 }), initialBars);
   assert.deepEqual(await provider.getBars('AAPL', '1', { to: 1, limit: 1 }), []);
   assert.equal(delegated.length, 1);
+});
+
+test('unregisters a history provider when its request is cancelled during chart readiness', async () => {
+  let current = true;
+  const registered = [];
+  const unregistered = [];
+  const registry = {
+    registerProvider: (name, provider) => registered.push({ name, provider }),
+    unregisterProvider: name => unregistered.push(name),
+    ready: async () => { current = false; },
+  };
+
+  const provider = await registerBacktestHistoryProvider(
+    registry,
+    { getBars: async () => [] },
+    'omega-backtest-2',
+    [],
+    () => current,
+  );
+
+  assert.equal(provider, null);
+  assert.equal(registered.length, 1);
+  assert.deepEqual(unregistered, ['omega-backtest-2']);
+});
+
+test('unregisters a history provider when chart readiness fails', async () => {
+  const unregistered = [];
+  const error = new Error('Chart readiness failed');
+  const registry = {
+    registerProvider: () => {},
+    unregisterProvider: name => unregistered.push(name),
+    ready: async () => { throw error; },
+  };
+
+  await assert.rejects(
+    registerBacktestHistoryProvider(registry, { getBars: async () => [] }, 'omega-backtest-3', [], () => true),
+    error,
+  );
+  assert.deepEqual(unregistered, ['omega-backtest-3']);
 });
