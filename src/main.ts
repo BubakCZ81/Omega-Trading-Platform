@@ -5,9 +5,10 @@ import { appAssetUrl } from './appPaths';
 import { registerLegendAction, registerIcon, registerRendererLayer, registerStatePersistence, registerWidgetAction, timeframeToMs, type IndicatorHandle } from '@luxalgo/vela';
 import { BinanceProvider } from '@luxalgo/vela/providers/binance';
 import { initializeCTraderFeed } from './ctraderFeed';
-import type { PineEditor, PineModel } from './pineEditorNext';
+import type { PineModel } from './pineEditorNext';
 import { getSavedScripts, saveScriptsToStorage } from './pineStorage';
 import { createPineScriptManager } from './pineScriptManager';
+import { createPineEditorLifecycle } from './pineEditorLifecycle';
 import { createPriceBarRatioController, type PriceBarRatioController } from './priceBarRatio';
 import {
   BID_ASK_COLOR_OPTIONS,
@@ -489,7 +490,7 @@ registerStatePersistence({
       localStorage.setItem('vela_theme', currentTheme);
       if (workspaceInitialized) {
         workspace.setTheme(velaTheme(currentTheme));
-        setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
+        pineEditorLifecycle.setTheme(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
         applyThemeUi(currentTheme);
       }
     }
@@ -894,42 +895,37 @@ workspace.on('cell:destroyed', event => {
 const editorHost = document.getElementById('code-editor') as HTMLDivElement;
 const editorStatus = document.getElementById('editor-status') as HTMLSpanElement;
 const editorModels = new Map<string, PineModel>();
-let pineEditor: PineEditor | null = null;
-let createPineModel: ((uri: string, value: string) => PineModel) | null = null;
-let setPineEditorTheme: ((theme: 'dark' | 'light') => void) | null = null;
-let setPineDiagnostics: ((model: PineModel, error: Error | null) => void) | null = null;
-let setPineCompileDiagnostics: ((model: PineModel, error: Error | null) => void) | null = null;
-let editorLoad: Promise<void> | null = null;
-let autosaveTimer: number | undefined;
-let liveValidationTimer: number | undefined;
-let liveValidationRevision = 0;
-let isApplyingPineUpgrade = false;
+let pineScriptManager: ReturnType<typeof createPineScriptManager>;
+const pineEditorLifecycle = createPineEditorLifecycle({
+  editorHost,
+  editorStatus,
+  editorModels,
+  scriptSelect: document.getElementById('script-select') as HTMLSelectElement,
+  getScripts: () => scripts,
+  getCurrentScriptName: () => currentScriptName,
+  getTheme: () => currentTheme === 'dark' ? 'dark' : 'light',
+  isEnabled: () => pineEditorModule.enabled && Boolean(pineEditorModule.value),
+  standalone: standalonePineEditor,
+  standaloneModules: standaloneEditorModules,
+  saveScripts: saveScriptsToStorage,
+  validateSource: validatePineSource,
+  displayDiagnostics: (error, code, name) => pineScriptManager.displayDiagnosticsInConsole(error, code, name),
+});
+const setEditorStatus = pineEditorLifecycle.setStatus;
+const getScriptModel = pineEditorLifecycle.getScriptModel;
+const initializeCodeEditor = pineEditorLifecycle.initialize;
+const getEditorValue = pineEditorLifecycle.getValue;
+const loadScriptIntoEditor = pineEditorLifecycle.loadScript;
+const refreshDropdown = pineEditorLifecycle.refreshDropdown;
 
-function setEditorStatus(message: string, state: 'error' | 'success' | '' = '', writeActivity = state !== 'error') {
-  editorStatus.textContent = '';
-  editorStatus.title = message;
-  if (state) editorStatus.dataset.state = state;
-  else delete editorStatus.dataset.state;
-  if (writeActivity && message !== 'Unsaved changes') window.addConsoleActivity?.(message, state || 'info');
-}
-
-function getScriptModel(name: string): PineModel | null {
-  if (!createPineModel) return null;
-  const existing = editorModels.get(name);
-  if (existing && !existing.isDisposed()) return existing;
-  const model = createPineModel(`inmemory://pine/${encodeURIComponent(name)}.pine`, scripts[name] ?? '');
-  editorModels.set(name, model);
-  return model;
-}
-
-const pineScriptManager = createPineScriptManager({
+pineScriptManager = createPineScriptManager({
   getWorkspace: () => workspace,
   getScripts: () => scripts,
   scriptHandles,
   groupByCellId,
   editorModels,
-  getPineDiagnostics: () => setPineDiagnostics,
-  getPineCompileDiagnostics: () => setPineCompileDiagnostics,
+  getPineDiagnostics: pineEditorLifecycle.getDiagnostics,
+  getPineCompileDiagnostics: pineEditorLifecycle.getCompileDiagnostics,
   setEditorStatus,
   isPropagating: () => propagatingGroupState,
   setPropagating: value => { propagatingGroupState = value; },
@@ -938,148 +934,13 @@ const scriptIndicatorId = pineScriptManager.scriptIndicatorId;
 const applyScriptToChart = pineScriptManager.applyScriptToChart;
 const addScriptToChart = pineScriptManager.addScriptToChart;
 const updateScriptOnChart = pineScriptManager.updateScriptOnChart;
-
-async function initializeCodeEditor() {
-  if (!pineEditorModule.enabled || !pineEditorModule.value) {
-    throw new Error('The Pine editor module is disabled or unavailable.');
-  }
-  if (pineEditor) {
-    const model = getScriptModel(currentScriptName);
-    if (model) pineEditor.setModel(model);
-    pineEditor.layout();
-    pineEditor.focus();
-    return;
-  }
-
-  if (!editorLoad) {
-    editorLoad = (async () => {
-      const [editorModule, referenceModule] = standaloneEditorModules
-        ? await standaloneEditorModules
-        : await Promise.all([import('./pineEditorNext'), import('./pineReferencePanel')]);
-      createPineModel = editorModule.createPineModel;
-      setPineEditorTheme = editorModule.setPineEditorTheme;
-      setPineDiagnostics = editorModule.setPineDiagnostics;
-      setPineCompileDiagnostics = editorModule.setPineCompileDiagnostics;
-      const referencePanel = referenceModule.createPineReferencePanel(() => pineEditor);
-      renderPineReference = filter => referencePanel.render(filter);
-
-      const model = getScriptModel(currentScriptName);
-      if (!model) throw new Error('Could not create the Pine editor model.');
-
-      pineEditor = editorModule.createPineEditor(editorHost, model, currentTheme === 'dark' ? 'dark' : 'light');
-      pineEditor.onMouseDown(event => {
-        if (event.event.browserEvent.detail !== 2 || !event.target.position) return;
-        const activeModel = pineEditor?.getModel();
-        if (!activeModel) return;
-        const referenceName = editorModule.getPineReferenceNameAtPosition(activeModel, event.target.position);
-        if (referenceName) referencePanel.open(referenceName);
-      });
-      pineEditor.onDidChangeModelContent(() => {
-        if (isApplyingPineUpgrade) return;
-        const editedModel = pineEditor?.getModel();
-        const diagnosticKey = `pine:${currentScriptName}`;
-        window.clearConsoleDiagnostics?.(diagnosticKey);
-        if (editedModel) {
-          setPineDiagnostics?.(editedModel, null);
-          for (const diagnostic of editorModule.getPineSyntaxDiagnostics(editedModel)) {
-            window.addConsoleOutput?.(
-              `Line ${diagnostic.line}, column ${diagnostic.column}: ${diagnostic.message}`,
-              diagnostic.severity,
-              diagnosticKey,
-            );
-          }
-        }
-        window.clearTimeout(liveValidationTimer);
-        const validationRevision = ++liveValidationRevision;
-        const validationName = currentScriptName;
-        const validationCode = editedModel?.getValue() ?? '';
-        liveValidationTimer = window.setTimeout(() => {
-          void validatePineSource(validationCode).then(error => {
-            if (validationRevision !== liveValidationRevision || currentScriptName !== validationName) return;
-            const currentModel = pineEditor?.getModel();
-            if (currentModel) setPineCompileDiagnostics?.(currentModel, error);
-            if (error) {
-              window.clearConsoleDiagnostics?.(`pine:${validationName}`);
-              pineScriptManager.displayDiagnosticsInConsole(error, validationCode, validationName);
-            }
-          });
-        }, 100);
-        window.clearTimeout(autosaveTimer);
-        setEditorStatus('Unsaved changes');
-        const modelName = currentScriptName;
-        const activeModel = pineEditor?.getModel();
-
-        autosaveTimer = window.setTimeout(() => {
-          if (!activeModel || activeModel.isDisposed()) return;
-
-          const nextValue = activeModel.getValue();
-          scripts[modelName] = nextValue;
-          saveScriptsToStorage(scripts);
-          if (currentScriptName === modelName) setEditorStatus(`Auto-saved "${modelName}".`, 'success');
-        }, 750);
-      });
-
-      renderPineReference();
-      pineEditor.focus();
-    })().catch((error: unknown) => {
-      editorLoad = null;
-      throw error;
-    });
-  }
-
-  await editorLoad;
-}
-
-window.addEventListener('editor-opened', () => {
-  if (!pineEditorModule.enabled || !pineEditorModule.value) return;
-  void initializeCodeEditor().catch((error: unknown) => {
-    setEditorStatus(`Editor failed to load: ${error instanceof Error ? error.message : String(error)}`, 'error');
-  });
-});
-
-// The standalone window announces `editor-opened` during module startup, before
-// this top-level module may finish loading optional features. Initialise again
-// after the listener exists so that event timing can never leave Monaco and the
-// local Pine reference unmounted. `initializeCodeEditor` shares `editorLoad`,
-// making this safe when the event was received as well.
-if (standalonePineEditor && pineEditorModule.enabled && pineEditorModule.value) {
-  void initializeCodeEditor().catch((error: unknown) => {
-    setEditorStatus(`Editor failed to load: ${error instanceof Error ? error.message : String(error)}`, 'error');
-  });
-}
-
-function getEditorValue(): string {
-  return pineEditor?.getValue() ?? scripts[currentScriptName] ?? '';
-}
-
-let renderPineReference: (filter?: string) => void = () => undefined;
-
 const scriptSelect = document.getElementById('script-select') as HTMLSelectElement;
-
-function loadScriptIntoEditor(name: string) {
-  const model = getScriptModel(name);
-  if (model) {
-    pineEditor?.setModel(model);
-    if (pineEditor) setEditorStatus(`Editing "${name}"`);
-  }
-}
-
-function refreshDropdown() {
-  scriptSelect.innerHTML = '';
-  Object.keys(scripts).forEach(name => {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
-    opt.selected = name === currentScriptName;
-    scriptSelect.appendChild(opt);
-  });
-}
-
+pineEditorLifecycle.attach();
 refreshDropdown();
 loadScriptIntoEditor(currentScriptName);
 
 scriptSelect.addEventListener('change', () => {
-  window.clearTimeout(autosaveTimer);
+  pineEditorLifecycle.cancelPendingSave();
   currentScriptName = scriptSelect.value;
   loadScriptIntoEditor(currentScriptName);
 });
@@ -1183,7 +1044,7 @@ if (standalonePineEditor) {
       const model = getScriptModel(name);
       if (model && model.getValue() !== source) model.setValue(source);
       loadScriptIntoEditor(name);
-      pineEditor?.focus();
+      pineEditorLifecycle.getEditor()?.focus();
       setEditorStatus(`Opened "${name}" from chart.`, 'success');
     });
   });
@@ -1222,12 +1083,12 @@ async function transpileSavedScript(name: string, code: string): Promise<Error |
   const error = await validatePineSource(code);
   if (!error) {
     const model = editorModels.get(name);
-    if (model) setPineCompileDiagnostics?.(model, null);
+    if (model) pineEditorLifecycle.getCompileDiagnostics()?.(model, null);
     window.clearConsoleDiagnostics?.(`pine:${name}`);
     return null;
   }
   const model = editorModels.get(name);
-  if (model) setPineCompileDiagnostics?.(model, error);
+  if (model) pineEditorLifecycle.getCompileDiagnostics()?.(model, error);
   window.clearConsoleDiagnostics?.(`pine:${name}`);
   pineScriptManager.displayDiagnosticsInConsole(error, code, name);
   return error;
@@ -1314,7 +1175,7 @@ document.getElementById('btn-upgrade-v6')!.addEventListener('click', async (even
       throw new Error('PineTS is disabled or unavailable. The chart is still running without Pine script compilation.');
     }
     await initializeCodeEditor();
-    const editor = pineEditor;
+    const editor = pineEditorLifecycle.getEditor();
     if (!editor) throw new Error('The Pine editor is not ready.');
     const source = editor.getValue();
     const [converterModule, pineTsRuntime] = await Promise.all([
@@ -1322,7 +1183,7 @@ document.getElementById('btn-upgrade-v6')!.addEventListener('click', async (even
       import('pinets'),
     ]);
     const conversion = converterModule.convertPineScriptToV6(source);
-    window.clearTimeout(autosaveTimer);
+    pineEditorLifecycle.cancelPendingSave();
     editor.updateOptions({ readOnly: true });
     setEditorStatus(`Checking Pine v${conversion.version} → v6 conversion…`);
 
@@ -1343,18 +1204,15 @@ document.getElementById('btn-upgrade-v6')!.addEventListener('click', async (even
     const chartError = await applyScriptToChart(currentScriptName, conversion.source);
     if (chartError) throw chartError;
 
-    isApplyingPineUpgrade = true;
-    editor.setValue(conversion.source);
-    isApplyingPineUpgrade = false;
+    pineEditorLifecycle.setValueWithoutValidation(conversion.source);
     scripts[currentScriptName] = conversion.source;
     saveScriptsToStorage(scripts);
     setEditorStatus(`Upgraded Pine v${conversion.version} to v6, saved, and compiled "${currentScriptName}".`, 'success');
   } catch (error) {
-    isApplyingPineUpgrade = false;
     const reason = error instanceof Error ? error.message : String(error);
     setEditorStatus(`Unable to upgrade script: ${reason}`, 'error');
   } finally {
-    pineEditor?.updateOptions({ readOnly: false });
+    pineEditorLifecycle.getEditor()?.updateOptions({ readOnly: false });
     button.disabled = false;
   }
 });
@@ -1432,8 +1290,8 @@ export async function openScriptInEditor(name: string, source?: string) {
 
   await initializeCodeEditor();
   loadScriptIntoEditor(name);
-  pineEditor?.layout();
-  pineEditor?.focus();
+  pineEditorLifecycle.getEditor()?.layout();
+  pineEditorLifecycle.getEditor()?.focus();
   setEditorStatus(`Editing "${name}"`, 'success');
 }
 (window as any).openScriptInEditor = openScriptInEditor;
@@ -1602,7 +1460,7 @@ function setTheme(theme: OmegaTheme) {
     console.error('Could not apply the selected theme to the chart workspace:', error);
   }
   try {
-    setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
+    pineEditorLifecycle.setTheme(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
   } catch (error) {
     console.error('Could not apply the selected theme to the Pine editor:', error);
   }
