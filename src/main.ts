@@ -2,7 +2,7 @@ import { registerLayout, VelaWorkspace } from '@luxalgo/vela/workspace';
 import './styles.css';
 import './editorDrawer';
 import { appAssetUrl } from './appPaths';
-import { registerLegendAction, registerIcon, registerRendererLayer, registerStatePersistence, registerWidgetAction, timeframeToMs, type IndicatorHandle, type VelaTheme } from '@luxalgo/vela';
+import { registerLegendAction, registerIcon, registerRendererLayer, registerStatePersistence, registerWidgetAction, timeframeToMs, type IndicatorHandle } from '@luxalgo/vela';
 import { BinanceProvider } from '@luxalgo/vela/providers/binance';
 import { initializeCTraderFeed } from './ctraderFeed';
 import type { PineEditor, PineModel } from './pineEditorNext';
@@ -19,28 +19,52 @@ import {
 } from './bidAskLines';
 import { clearStartupIndicators } from './startupWorkspaceState';
 import { restoreWorkspaceScriptIndicators, snapshotWorkspaceScriptIndicators } from './workspaceScriptIndicators';
-import { applyTimeframe, timeframeInputState } from './timeframeSelection';
+import { initializeChartTimeframeControls } from './chartTimeframeControls';
 import { registerOrderFlowChartTypes } from './orderFlowCharts';
 import { initializeSpreadReadout } from './spreadReadout';
 import { initializeColorPickerDismissal } from './colorPickerDismissal';
-import {
-  cancelPendingPaperOrderAtPrice,
-  hasPendingPaperOrderAtPrice,
-  initializeChartPaperTrading,
-  openPendingOrderDialog,
-} from './chartPaperTrading';
 import { initializeQuickTradeToggle } from './quickTradeToggle';
-import { ChartCellControlsManager } from './chartCellControls';
+import { CHART_GROUP_COLORS, initializeChartGroups } from './chartGroups';
 import './favoriteDrawingTools';
-import { bootWithOptionalModules, loadOptionalModule, type OptionalModule, type OptionalModuleId } from './featureModules';
+import { loadOptionalModule, type OptionalModule, type OptionalModuleId } from './featureModules';
 import { createReplayAwareEngine } from './replayStreamingEngine';
 import { getMarketFlowStyle, refreshMarketFlowStyles, setMarketFlowStyle } from './marketFlowPane';
 import { attachFuturesMonthBoundaries } from './futuresMonthBoundaries';
-import { initializeVisualBacktest } from './visualBacktest';
+import { formatTradingSessionStatus, getOpenTradingSessions } from './tradingSessions';
+import { PersistentCandleProvider } from './persistentCandleCache';
+import { initializeWorkspaceProfiles } from './workspaceProfiles';
+import type { ChartTabsState } from './chartTabs';
+import { createWorkspaceFeatureLoaders } from './workspaceFeatureLoaders';
+import { initializePlatformZoom } from './platformZoom';
+import { initializePaperTradeDrag } from './paperTradeDrag';
+import { applyThemeUi, initializeThemeMenu, isOmegaTheme, velaTheme, type OmegaTheme } from './themeControls';
+import { LoadedBarsController } from './loadedBars';
+import { initializeTradingAccounts } from './tradingAccounts';
 // createWindow will be loaded lazily inside openTauriStandaloneEditor
 
 const startupScreen = document.getElementById('omega-startup-screen');
 const startupStatus = document.getElementById('omega-startup-status');
+
+type DiagnosticEntry = {
+  time: string;
+  source?: string;
+  type?: string;
+  name?: string;
+  target?: string;
+  status?: string;
+  message?: string;
+  durationMs?: number;
+};
+
+declare global {
+  interface Window {
+    velaDiagnostics?: {
+      openConsole(): Promise<boolean>;
+      getRecent(): Promise<{ entries: DiagnosticEntry[]; file: string }>;
+      onEntry(callback: (entry: DiagnosticEntry) => void): () => void;
+    };
+  }
+}
 
 function setStartupStatus(message: string, state?: 'error'): void {
   if (startupStatus) {
@@ -168,42 +192,6 @@ if ('__TAURI_INTERNALS__' in window) {
     },
   };
 
-  type AlpacaBridgeApi = NonNullable<Window['velaAlpaca']>;
-  const alpacaBars = new Set<Parameters<AlpacaBridgeApi['onBar']>[0]>();
-  const alpacaStatuses = new Set<Parameters<AlpacaBridgeApi['onStatus']>[0]>();
-  const alpacaEventsReady = Promise.all([
-    listen<Parameters<AlpacaBridgeApi['onBar']>[0] extends (bar: infer Bar) => void ? Bar : never>('alpaca:bar', event => {
-      for (const callback of alpacaBars) callback(event.payload);
-    }),
-    listen<Parameters<AlpacaBridgeApi['onStatus']>[0] extends (state: infer State) => void ? State : never>('alpaca:status', event => {
-      for (const callback of alpacaStatuses) callback(event.payload);
-    }),
-  ]).catch(error => {
-    console.error('Could not initialize Alpaca market-data events:', error);
-    throw error;
-  });
-  window.velaAlpaca = {
-    connect: credentials => invoke<Awaited<ReturnType<AlpacaBridgeApi['connect']>>>('alpaca_connect', {
-      keyId: credentials?.keyId ?? '',
-      secretKey: credentials?.secretKey ?? '',
-    }).then(async result => {
-      await alpacaEventsReady;
-      return result;
-    }),
-    status: () => invoke<Awaited<ReturnType<AlpacaBridgeApi['status']>>>('alpaca_status'),
-    bars: request => invoke<Awaited<ReturnType<AlpacaBridgeApi['bars']>>>('alpaca_bars', request),
-    subscribe: (ticker, timeframe) => invoke<Awaited<ReturnType<AlpacaBridgeApi['subscribe']>>>('alpaca_subscribe', { ticker, timeframe }),
-    unsubscribe: subscriptionId => invoke<Awaited<ReturnType<AlpacaBridgeApi['unsubscribe']>>>('alpaca_unsubscribe', { subscriptionId }),
-    disconnect: () => invoke<Awaited<ReturnType<AlpacaBridgeApi['disconnect']>>>('alpaca_disconnect'),
-    onBar: callback => {
-      alpacaBars.add(callback);
-      return () => alpacaBars.delete(callback);
-    },
-    onStatus: callback => {
-      alpacaStatuses.add(callback);
-      return () => alpacaStatuses.delete(callback);
-    },
-  };
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
   const editorWindowLabel = 'omega-pine-editor-window';
   const editorEvents = {
@@ -292,7 +280,6 @@ const optionalModuleLoads = Promise.all([
   loadStartupModule('mt5-feed', () => import('./mt5Feed')),
   loadStartupModule('alpaca-feed', () => import('./alpacaFeed')),
   loadStartupModule('pine-editor', () => import('./pineAiAssistant')),
-  loadStartupModule('pinets', () => import('@luxalgo/vela-pinets')),
   loadStartupModule('indicator-browser', () => import('./indicatorBrowser')),
   loadStartupModule('price-bar-ratio', () => import('./priceBarRatioMenu')),
   loadStartupModule('backtest', () => import('./backtestPanel')),
@@ -307,47 +294,8 @@ function loadStartupModule<T>(id: OptionalModuleId, loader: () => Promise<T>): P
   return loadOptionalModule(id, loader);
 }
 
-const [
-  brokerModule,
-  mt5FeedModule,
-  alpacaFeedModule,
-  pineEditorModule,
-  pineTsModule,
-  indicatorBrowserModule,
-  priceBarRatioModule,
-  backtestModule,
-  newsModule,
-  updateCheckerModule,
-] = await optionalModuleLoads;
+const pineTsModule = await loadStartupModule('pinets', () => import('@luxalgo/vela-pinets'));
 setStartupStatus('Restoring your charts and workspace settings…');
-
-function hideFeatureElements(enabled: boolean, ...ids: string[]) {
-  if (enabled) return;
-  for (const id of ids) {
-    const element = document.getElementById(id);
-    if (element) element.hidden = true;
-  }
-}
-
-hideFeatureElements(brokerModule.enabled, 'broker-toggle', 'broker-modal');
-hideFeatureElements(mt5FeedModule.enabled, 'mt5-feed-toggle', 'mt5-feed-modal');
-hideFeatureElements(alpacaFeedModule.enabled, 'alpaca-feed-toggle', 'alpaca-feed-modal');
-hideFeatureElements(mt5FeedModule.enabled || alpacaFeedModule.enabled, 'local-feeds-toggle', 'local-feeds-modal');
-hideFeatureElements(backtestModule.enabled, 'backtest-toggle');
-hideFeatureElements(pineEditorModule.enabled, 'editor-toggle-btn', 'editor-drawer', 'resize-handle');
-hideFeatureElements(updateCheckerModule.enabled, 'check-updates');
-const connectionLatency = document.getElementById('connection-latency');
-const tradingAccountMode = document.getElementById('trading-account-mode');
-const tradingAccountDetail = document.getElementById('trading-account-detail');
-document.addEventListener('omega:connection-latency', (event) => {
-  const milliseconds = (event as CustomEvent<number>).detail;
-  if (!connectionLatency || !Number.isFinite(milliseconds)) return;
-  connectionLatency.textContent = `Server: ${Math.round(milliseconds)} ms`;
-  connectionLatency.dataset.quality = milliseconds < 100 ? 'good' : milliseconds < 300 ? 'warning' : 'poor';
-});
-if (updateCheckerModule.enabled && updateCheckerModule.value) {
-  updateCheckerModule.value.initializeUpdateChecker();
-}
 
 // ---------------------------------------------------------------------------
 // 1. Script Storage
@@ -358,20 +306,31 @@ let currentScriptName = requestedPineScript && scripts[requestedPineScript]
   ? requestedPineScript
   : Object.keys(scripts)[0] || 'Dual EMA Cross';
 const savedTheme = localStorage.getItem('vela_theme');
-type OmegaTheme = 'dark' | 'light' | 'high-contrast';
-const HIGH_CONTRAST_THEME: VelaTheme = {
-  background: '#f7fbff',
-  textColor: '#061a33',
-  gridColor: '#9bb1c8',
-  borderColor: '#183b60',
-  upColor: '#0063a8',
-  downColor: '#b00020',
-  fontFamily: 'Arial, sans-serif',
-};
-let currentTheme: OmegaTheme = savedTheme === 'light' || savedTheme === 'high-contrast' ? savedTheme : 'dark';
+let currentTheme: OmegaTheme = isOmegaTheme(savedTheme) ? savedTheme : 'dark';
 let workspace: VelaWorkspace;
+let loadedBarsController: LoadedBarsController;
 let workspaceInitialized = false;
+type PaperTradingModule = typeof import('./chartPaperTrading');
+let paperTradingModule: PaperTradingModule | null = null;
+let paperTradingInitialization: Promise<PaperTradingModule> | null = null;
 let barThickness = Math.max(0.15, Math.min(1, Number(localStorage.getItem('vela_bar_thickness') ?? 1)));
+
+function ensurePaperTrading(): Promise<PaperTradingModule> {
+  if (paperTradingModule) return Promise.resolve(paperTradingModule);
+  if (!paperTradingInitialization) {
+    paperTradingInitialization = import('./rightTradingPanel')
+      .then(({ initializeRightTradingPanel }) => initializeRightTradingPanel(workspace))
+      .then(module => {
+        paperTradingModule = module;
+        return module;
+      })
+      .catch(error => {
+        paperTradingInitialization = null;
+        throw error;
+      });
+  }
+  return paperTradingInitialization;
+}
 
 async function loadIndicatorManifest() {
   try {
@@ -406,15 +365,15 @@ const chartGroupColors = ['red', 'blue', 'green', 'yellow', 'purple'] as const;
 const groupByCellId: Record<string, string> = {};
 const OMEGA_TABS_LAYOUT_PREFIX = 'omega-tabs-';
 const OMEGA_TABS_MAX = 8;
-let chartTabsEnabled = localStorage.getItem('omega_chart_tabs_enabled') === 'true';
 const storedChartTabCount = Number(localStorage.getItem('omega_chart_tabs_count'));
-let chartTabCount = Number.isInteger(storedChartTabCount)
-  ? Math.max(1, Math.min(OMEGA_TABS_MAX, storedChartTabCount))
-  : 1;
-let chartTabsPreviousLayout = localStorage.getItem('omega_chart_tabs_previous_layout') || '1';
+const chartTabsState: ChartTabsState = {
+  enabled: localStorage.getItem('omega_chart_tabs_enabled') === 'true',
+  count: Number.isInteger(storedChartTabCount) ? Math.max(1, Math.min(OMEGA_TABS_MAX, storedChartTabCount)) : 1,
+  previousLayout: localStorage.getItem('omega_chart_tabs_previous_layout') || '1',
+};
 const chartTabsLayoutId = (count: number) => `${OMEGA_TABS_LAYOUT_PREFIX}${count}`;
 const isChartTabsLayout = (layoutId: string) => /^omega-tabs-[1-8]$/.test(layoutId);
-if (isChartTabsLayout(chartTabsPreviousLayout)) chartTabsPreviousLayout = '1';
+if (isChartTabsLayout(chartTabsState.previousLayout)) chartTabsState.previousLayout = '1';
 
 // Each tab count has its own overlapping layout. Reducing the count therefore makes
 // Vela destroy the removed cells instead of merely hiding live chart instances.
@@ -455,113 +414,11 @@ declare global {
     velaPineExport?: PineExportBridge;
     velaApp?: {
       ready(): void;
-      getZoomFactor(): Promise<number>;
-      setZoomFactor(factor: number): Promise<number>;
     };
   }
 }
 
-const PLATFORM_ZOOM_STORAGE_KEY = 'omega_platform_zoom_factor';
-const PLATFORM_ZOOM_MIN = 0.75;
-const PLATFORM_ZOOM_MAX = 1.5;
-const PLATFORM_ZOOM_STEP = 0.1;
-const platformZoomOutButton = document.getElementById('platform-zoom-out') as HTMLButtonElement | null;
-const platformZoomInButton = document.getElementById('platform-zoom-in') as HTMLButtonElement | null;
-const platformZoomValue = document.getElementById('platform-zoom-value') as HTMLInputElement | null;
-const chartWrapper = document.getElementById('chart-wrapper');
-const chartSurface = document.getElementById('chart');
-const chartStage = document.getElementById('chart-stage');
-const savedPlatformZoom = localStorage.getItem(PLATFORM_ZOOM_STORAGE_KEY);
-const parsedPlatformZoom = savedPlatformZoom === null ? 1 : Number(savedPlatformZoom);
-let platformZoom = Number.isFinite(parsedPlatformZoom) && parsedPlatformZoom > 0
-  ? Math.min(PLATFORM_ZOOM_MAX, Math.max(PLATFORM_ZOOM_MIN, parsedPlatformZoom))
-  : 1;
-
-function updatePlatformZoomControls(): void {
-  const percent = Math.round(platformZoom * 100);
-  if (platformZoomValue && document.activeElement !== platformZoomValue) platformZoomValue.value = `${percent}%`;
-  if (platformZoomOutButton) platformZoomOutButton.disabled = platformZoom <= PLATFORM_ZOOM_MIN;
-  if (platformZoomInButton) platformZoomInButton.disabled = platformZoom >= PLATFORM_ZOOM_MAX;
-}
-
-function applyPlatformScaleStyles(zoom: number): void {
-  document.documentElement.style.setProperty('--omega-platform-scale', String(zoom));
-  document.documentElement.style.zoom = '';
-}
-
-function preserveChartSize(): void {
-  if (!chartWrapper || !chartSurface || !chartStage) return;
-  const fixedHeight = Array.from(chartWrapper.children).reduce((height, child) => {
-    if (!(child instanceof HTMLElement) || child === chartStage) return height;
-    const position = getComputedStyle(child).position;
-    return position === 'absolute' || position === 'fixed' ? height : height + child.offsetHeight;
-  }, 0);
-  const availableHeight = Math.max(0, chartWrapper.clientHeight - fixedHeight);
-  chartSurface.style.flex = '0 0 auto';
-  chartSurface.style.height = `${availableHeight * platformZoom}px`;
-}
-
-if (chartWrapper && chartSurface && chartStage) {
-  const chartResizeObserver = new ResizeObserver(preserveChartSize);
-  chartResizeObserver.observe(chartWrapper);
-  chartResizeObserver.observe(chartStage);
-  for (const id of ['top-toolbar', 'chart-tabs-bar']) {
-    const element = document.getElementById(id);
-    if (element) chartResizeObserver.observe(element);
-  }
-  window.addEventListener('resize', preserveChartSize);
-}
-
-async function applyPlatformZoom(nextZoom: number): Promise<void> {
-  platformZoom = Math.round(Math.min(PLATFORM_ZOOM_MAX, Math.max(PLATFORM_ZOOM_MIN, nextZoom)) * 100) / 100;
-  localStorage.setItem(PLATFORM_ZOOM_STORAGE_KEY, String(platformZoom));
-  updatePlatformZoomControls();
-  if (window.velaApp) {
-    try {
-      platformZoom = await window.velaApp.setZoomFactor(platformZoom);
-      localStorage.setItem(PLATFORM_ZOOM_STORAGE_KEY, String(platformZoom));
-    } catch (error) {
-      console.warn('Could not persist platform zoom in the desktop shell:', error);
-    }
-  }
-  applyPlatformScaleStyles(platformZoom);
-  preserveChartSize();
-  updatePlatformZoomControls();
-}
-
-platformZoomOutButton?.addEventListener('click', () => { void applyPlatformZoom(platformZoom - PLATFORM_ZOOM_STEP); });
-platformZoomInButton?.addEventListener('click', () => { void applyPlatformZoom(platformZoom + PLATFORM_ZOOM_STEP); });
-function readPlatformZoomInput(): number | null {
-  const value = platformZoomValue?.value.trim().replace(',', '.').replace('%', '');
-  if (!value) return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return parsed > 5 ? parsed / 100 : parsed;
-}
-function commitPlatformZoomInput(): void {
-  const zoom = readPlatformZoomInput();
-  if (zoom === null) {
-    updatePlatformZoomControls();
-    return;
-  }
-  void applyPlatformZoom(zoom);
-}
-platformZoomValue?.addEventListener('change', commitPlatformZoomInput);
-platformZoomValue?.addEventListener('blur', commitPlatformZoomInput);
-platformZoomValue?.addEventListener('keydown', event => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    commitPlatformZoomInput();
-    platformZoomValue.blur();
-  }
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    updatePlatformZoomControls();
-    platformZoomValue.blur();
-  }
-});
-updatePlatformZoomControls();
-void applyPlatformZoom(platformZoom);
+initializePlatformZoom();
 
 function getWorkspaceStorage() {
   if (window.velaWorkspaceFiles) {
@@ -614,17 +471,26 @@ registerStatePersistence({
 registerStatePersistence({
   key: 'omega.chartPreferences',
   scope: 'global',
-  serialize: () => ({ theme: currentTheme, barThickness, lockPriceToBarRatio, showBidAskLines, bidAskLineStyle, chartTabsEnabled, chartTabCount, chartTabsPreviousLayout }),
+  serialize: () => ({
+    theme: currentTheme,
+    barThickness,
+    lockPriceToBarRatio,
+    showBidAskLines,
+    bidAskLineStyle,
+    chartTabsEnabled: chartTabsState.enabled,
+    chartTabCount: chartTabsState.count,
+    chartTabsPreviousLayout: chartTabsState.previousLayout,
+  }),
   restore: payload => {
     if (!payload || typeof payload !== 'object') return;
     const preferences = payload as Record<string, unknown>;
-    if (preferences.theme === 'dark' || preferences.theme === 'light' || preferences.theme === 'high-contrast') {
+    if (isOmegaTheme(preferences.theme)) {
       currentTheme = preferences.theme;
       localStorage.setItem('vela_theme', currentTheme);
       if (workspaceInitialized) {
-        workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
-        setPineEditorTheme?.(currentTheme === 'dark' ? 'dark' : 'light');
-        updateThemeUI(currentTheme);
+        workspace.setTheme(velaTheme(currentTheme));
+        setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
+        applyThemeUi(currentTheme);
       }
     }
     if (typeof preferences.barThickness === 'number' && Number.isFinite(preferences.barThickness)) {
@@ -639,12 +505,12 @@ registerStatePersistence({
       showBidAskLines = preferences.showBidAskLines;
       localStorage.setItem('vela_show_bid_ask_lines', String(showBidAskLines));
     }
-    if (typeof preferences.chartTabsEnabled === 'boolean') chartTabsEnabled = preferences.chartTabsEnabled;
+    if (typeof preferences.chartTabsEnabled === 'boolean') chartTabsState.enabled = preferences.chartTabsEnabled;
     if (typeof preferences.chartTabCount === 'number' && Number.isInteger(preferences.chartTabCount)) {
-      chartTabCount = Math.max(1, Math.min(OMEGA_TABS_MAX, preferences.chartTabCount));
+      chartTabsState.count = Math.max(1, Math.min(OMEGA_TABS_MAX, preferences.chartTabCount));
     }
     if (typeof preferences.chartTabsPreviousLayout === 'string' && !isChartTabsLayout(preferences.chartTabsPreviousLayout)) {
-      chartTabsPreviousLayout = preferences.chartTabsPreviousLayout;
+      chartTabsState.previousLayout = preferences.chartTabsPreviousLayout;
     }
     if (preferences.bidAskLineStyle && typeof preferences.bidAskLineStyle === 'object') {
       const style = preferences.bidAskLineStyle as Partial<BidAskLineStyle>;
@@ -771,7 +637,7 @@ function registerChartSettings(chart: VelaWorkspace['chart']) {
         {
           kind: 'toggle',
           label: 'Chart tabs',
-          get: () => chartTabsEnabled,
+          get: () => chartTabsState.enabled,
           set: (enabled: boolean) => setChartTabsEnabled(enabled),
         },
         {
@@ -800,9 +666,9 @@ function registerChartSettings(chart: VelaWorkspace['chart']) {
         {
           kind: 'select',
           label: 'Platform theme',
-          options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast (blue)']],
+          options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast — light blue'], ['high-contrast-dark', 'High contrast — dark blue']],
           get: () => currentTheme,
-          set: (theme: string) => setTheme(theme === 'high-contrast' ? 'high-contrast' : theme === 'light' ? 'light' : 'dark'),
+          set: (theme: string) => setTheme(isOmegaTheme(theme) ? theme : 'dark'),
         },
         {
           kind: 'color',
@@ -829,7 +695,7 @@ function registerChartSettings(chart: VelaWorkspace['chart']) {
         set: (value: string) => {
           const bars = Number.parseInt(value, 10);
           if (!Number.isSafeInteger(bars) || bars < 1 || bars > 50_000) return;
-          setLoadedBarCount(settingsCellId(), 0, bars);
+          loadedBarsController.set(settingsCellId(), 0, bars);
           void chart.setMarket({ bars });
         },
       }],
@@ -927,8 +793,8 @@ try {
 }
 
 const restoredLayout = restoredWorkspaceState?.layout;
-const initialWorkspaceLayout = chartTabsEnabled
-  ? chartTabsLayoutId(chartTabCount)
+const initialWorkspaceLayout = chartTabsState.enabled
+  ? '1'
   : (restoredLayout && !isChartTabsLayout(restoredLayout) ? restoredLayout : '1');
 const chartGridHost = document.createElement('div');
 chartGridHost.id = 'chart-grid';
@@ -937,55 +803,60 @@ document.getElementById('chart')!.append(chartGridHost);
 
 setStartupStatus('Building your trading workspace…');
 try {
-  workspace = await bootWithOptionalModules([optionalModuleLoads], () => new VelaWorkspace(chartGridHost, {
-    layout: initialWorkspaceLayout, symbol: 'BTCUSDT', timeframe: '60', live: true, volume: false, theme: currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme, persist: 'vela-workspace', storage: workspaceStorage,
+  workspace = new VelaWorkspace(chartGridHost, {
+    layout: initialWorkspaceLayout, symbol: 'BTCUSDT', timeframe: '60', live: true, volume: false, theme: velaTheme(currentTheme), persist: 'vela-workspace', storage: workspaceStorage,
     cells: restoredWorkspaceState?.charts?.length ? Object.fromEntries(restoredWorkspaceState.charts.map((chart: { id: string; symbol?: string; timeframe?: string }) => [chart.id, { symbol: chart.symbol, timeframe: chart.timeframe }])) : (window.velaWorkspaceFiles ? { primary: { symbol: 'BTCUSDT', timeframe: '60' } } : undefined),
     sync: restoredWorkspaceState?.sync,
     topbar: { left: ['symbol', 'indicators', 'omega-favorite-drawing-tools'] },
     providers: {
-      binance: () => new BinanceProvider(),
+      binance: () => new PersistentCandleProvider(new BinanceProvider()),
     },
     engines: pineEngine ? { pine: () => pineEngine } : {},
     indicators: loadIndicatorManifest,
-  }));
+  });
   console.log('Vela Workspace loaded.');
 } catch (err) {
   console.error('Workspace init error:', err);
   showStartupFailure(err);
   throw err;
 }
+loadedBarsController = new LoadedBarsController(workspace);
+const [
+  brokerModule,
+  mt5FeedModule,
+  alpacaSdkFeedModule,
+  pineEditorModule,
+  indicatorBrowserModule,
+  priceBarRatioModule,
+  backtestModule,
+  newsModule,
+  updateCheckerModule,
+] = await optionalModuleLoads;
+
+function hideFeatureElements(enabled: boolean, ...ids: string[]) {
+  if (enabled) return;
+  for (const id of ids) {
+    const element = document.getElementById(id);
+    if (element) element.hidden = true;
+  }
+}
+
+hideFeatureElements(brokerModule.enabled, 'broker-toggle', 'broker-modal');
+hideFeatureElements(mt5FeedModule.enabled, 'mt5-feed-toggle', 'mt5-feed-modal');
+hideFeatureElements(mt5FeedModule.enabled, 'local-feeds-toggle', 'local-feeds-modal');
+hideFeatureElements(pineEditorModule.enabled, 'editor-toggle-btn', 'editor-drawer', 'resize-handle');
+hideFeatureElements(updateCheckerModule.enabled, 'check-updates');
+initializeTradingAccounts();
+if (updateCheckerModule.enabled && updateCheckerModule.value) {
+  updateCheckerModule.value.initializeUpdateChecker();
+}
+
 workspaceInitialized = true;
-workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
+workspace.setTheme(velaTheme(currentTheme));
 
 mt5FeedModule.value?.initializeMt5Feed(() => workspace);
-alpacaFeedModule.value?.initializeAlpacaFeed(() => workspace);
+alpacaSdkFeedModule.value?.initializeAlpacaSdkFeed(() => workspace);
 initializeCTraderFeed(() => workspace);
-
-const localFeedsModal = document.getElementById('local-feeds-modal');
-const localFeedsToggle = document.getElementById('local-feeds-toggle');
-const closeLocalFeeds = () => {
-  localFeedsModal?.setAttribute('aria-hidden', 'true');
-  if (localFeedsModal) localFeedsModal.hidden = true;
-};
-localFeedsToggle?.addEventListener('click', () => {
-  if (!localFeedsModal) return;
-  localFeedsModal.hidden = false;
-  localFeedsModal.setAttribute('aria-hidden', 'false');
-});
-document.getElementById('local-feeds-close')?.addEventListener('click', closeLocalFeeds);
-localFeedsModal?.addEventListener('click', event => {
-  if (event.target === localFeedsModal) closeLocalFeeds();
-});
-document.querySelectorAll<HTMLButtonElement>('[data-local-feed]').forEach(button => {
-  const feedId = button.dataset.localFeed === 'mt5' ? 'mt5-feed-toggle' : 'alpaca-feed-toggle';
-  const trigger = document.getElementById(feedId) as HTMLButtonElement | null;
-  const enabled = button.dataset.localFeed === 'mt5' ? mt5FeedModule.enabled : alpacaFeedModule.enabled;
-  if (!trigger || !enabled) button.hidden = true;
-  button.addEventListener('click', () => {
-    trigger?.click();
-    closeLocalFeeds();
-  });
-});
 
 priceBarRatioModule.value?.initializePriceBarRatioMenu(
   () => lockPriceToBarRatio,
@@ -999,11 +870,6 @@ priceBarRatioModule.value?.initializePriceBarRatioMenu(
 initializeSpreadReadout(() => workspace.chart);
 initializeColorPickerDismissal();
 initializeQuickTradeToggle();
-initializeChartPaperTrading(workspace);
-
-document.getElementById('backtest-toggle')?.addEventListener('click', () => {
-  workspace.context().togglePanel('omega-backtest');
-});
 
 for (const cell of workspace.cells()) configureChartRenderer(cell.chart, cell.id);
 workspace.on('cell:created', event => {
@@ -1137,7 +1003,7 @@ async function initializeCodeEditor() {
               pineScriptManager.displayDiagnosticsInConsole(error, validationCode, validationName);
             }
           });
-        }, 300);
+        }, 100);
         window.clearTimeout(autosaveTimer);
         setEditorStatus('Unsaved changes');
         const modelName = currentScriptName;
@@ -1633,368 +1499,9 @@ if (!pineEngine) {
   console.info('PineTS is disabled; the chart is available without Pine script compilation.');
 }
 // ---------------------------------------------------------------------------
-// 6. Chart & Theme Controls
-// ---------------------------------------------------------------------------
-const customTimeframeMenu = document.getElementById('custom-timeframe-menu') as HTMLDetailsElement;
-const customTimeframeValue = document.getElementById('custom-timeframe-value') as HTMLInputElement;
-const customTimeframeUnit = document.getElementById('custom-timeframe-unit') as HTMLSelectElement;
-const timeframeHelp = document.getElementById('timeframe-help') as HTMLElement;
-const applyTimeframeButton = document.getElementById('apply-custom-timeframe') as HTMLButtonElement;
-const chartTypeSelect = document.getElementById('chart-type-select') as HTMLSelectElement;
-const ctraderTimeframeMenu = document.getElementById('ctrader-timeframe-menu') as HTMLDetailsElement;
-const ctraderTimeframeGrid = document.getElementById('ctrader-timeframe-grid') as HTMLElement;
-function syncChartControls() {
-  const timeframe = workspace.chart.market.timeframe ?? '60';
-  customTimeframeMenu.querySelector('summary')!.textContent = formatTimeframeLabel(timeframe);
-  syncTimeframeInput(timeframe);
-  const style = workspace.chart.renderer.get('priceStyle');
-  const styleLabel = typeof style === 'string' && style !== 'candles'
-    ? (style === 'heikinashi' ? `Heikin ${formatTimeframeLabel(timeframe)}` : style[0].toUpperCase() + style.slice(1))
-    : formatTimeframeLabel(timeframe);
-  ctraderTimeframeMenu.querySelector('summary')!.textContent = styleLabel;
-  const rendererConfig = workspace.chart.renderer.getConfig() as { chartTypes?: Record<string, { brickPips?: string | number; customBrickPips?: number }> } | null;
-  const persistedPips = Number(rendererConfig?.chartTypes?.[String(style)]?.customBrickPips || rendererConfig?.chartTypes?.[String(style)]?.brickPips || 0);
-  for (const button of ctraderTimeframeGrid.querySelectorAll<HTMLButtonElement>('button[data-style]')) {
-    const activePips = persistedPips > 0 ? persistedPips : selectedPipsByCell.get(workspace.active.id) ?? 5;
-    const selected = button.dataset.style === style && (button.dataset.pips ? Number(button.dataset.pips) === activePips : button.dataset.timeframe === timeframe);
-    button.classList.toggle('selected', selected);
-    button.setAttribute('aria-pressed', String(selected));
-  }
-  if (typeof style === 'string' && Array.from(chartTypeSelect.options).some(option => option.value === style)) chartTypeSelect.value = style;
-}
-function syncTimeframeInput(timeframe: string) {
-  const input = timeframeInputState(timeframe);
-  if (!input) return;
-  customTimeframeValue.value = String(input.value);
-  customTimeframeUnit.value = input.unit;
-}
-function formatTimeframeLabel(timeframe: string): string {
-  const tickMatch = /^T([1-9]\d{0,4})$/i.exec(timeframe);
-  if (tickMatch) return `${tickMatch[1]}T`;
-  if (/^\d+$/.test(timeframe)) {
-    const minutes = Number(timeframe);
-    if (minutes % 1440 === 0) return `${minutes / 1440}D`;
-    if (minutes % 60 === 0) return `${minutes / 60}h`;
-    return `${minutes}m`;
-  }
-  return ({ D: '1D', W: '1W', M: '1M' } as Record<string, string>)[timeframe] ?? timeframe;
-}
+const { sync: syncChartControls } = initializeChartTimeframeControls(workspace);
 
-async function setChartStyle(cell: ReturnType<typeof workspace.cell> | undefined, style: string): Promise<void> {
-  if (!cell) return;
-  const chart = cell.chart;
-  if ((style === 'renko' || style === 'range')
-    && chart.market.symbol?.startsWith('MT5:')
-    && (chart.market.timeframe ?? '').toUpperCase() !== 'T1') {
-    const actualTimeframe = await applyTimeframe(chart, 'T1');
-    if (actualTimeframe !== 'T1') {
-      throw new Error(`Could not switch to tick input for ${style}; the chart is still showing ${formatTimeframeLabel(actualTimeframe)}.`);
-    }
-  }
-  chart.renderer.set('priceStyle', style);
-}
-
-function updateChartStyleHelp(cell: ReturnType<typeof workspace.cell> | undefined, style: string): void {
-  delete timeframeHelp.dataset.state;
-  if (style === 'renko' || style === 'range') {
-    timeframeHelp.textContent = cell?.chart.market.symbol?.startsWith('MT5:')
-      ? `${style === 'renko' ? 'Renko' : 'Range'} uses MT5 one-tick input for more accurate price sequencing.`
-      : `${style === 'renko' ? 'Renko' : 'Range'} uses this feed’s OHLC bars; intrabar price order is estimated without raw ticks.`;
-  } else {
-    timeframeHelp.textContent = '';
-  }
-}
-
-type PeriodChoice = { label: string; timeframe?: string; style: string; pips?: number; disabled?: boolean };
-const standardPeriods: PeriodChoice[] = [
-  ['1 minute', '1'], ['2 minutes', '2'], ['3 minutes', '3'], ['4 minutes', '4'], ['5 minutes', '5'], ['6 minutes', '6'], ['7 minutes', '7'], ['8 minutes', '8'], ['10 minutes', '10'], ['15 minutes', '15'], ['20 minutes', '20'], ['30 minutes', '30'], ['45 minutes', '45'], ['1 hour', '60'], ['2 hours', '120'], ['3 hours', '180'], ['4 hours', '240'], ['6 hours', '360'], ['8 hours', '480'], ['12 hours', '720'], ['1 day', 'D'], ['1 week', 'W'],
-].map(([label, timeframe]) => ({ label, timeframe, style: 'candles' }));
-const pipSizes = [
-  1, 2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 25, 30, 35, 40, 45, 50, 80, 100, 150,
-  200, 300, 500, 800, 1000, 1200, 1500, 1800, 2000, 2500, 3000,
-];
-const tickSizes = [
-  1, 2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200, 250, 300,
-  400, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000,
-];
-const selectedPipsByCell = new Map<string, number>();
-
-function addPeriodColumn(title: string, prefix: string, choices: PeriodChoice[]) {
-  const column = document.createElement('section'); column.className = 'ctrader-timeframe-column';
-  const heading = document.createElement('h3'); heading.textContent = title;
-  const list = document.createElement('div'); list.className = 'ctrader-timeframe-list';
-  for (const choice of choices) {
-    const button = document.createElement('button'); button.type = 'button'; button.disabled = Boolean(choice.disabled);
-    button.dataset.style = choice.style; if (choice.timeframe) button.dataset.timeframe = choice.timeframe; if (choice.pips) button.dataset.pips = String(choice.pips);
-    const key = document.createElement('kbd'); key.textContent = choice.pips ? `${prefix}${choice.pips}` : prefix;
-    button.append(key, document.createTextNode(choice.pips ? `${choice.pips} pips` : choice.label));
-    button.addEventListener('click', async () => {
-      const cell = workspace.cell(workspace.active.id); if (!cell) return;
-      if (choice.timeframe?.startsWith('T') && !cell.chart.market.symbol?.startsWith('MT5:')) {
-        timeframeHelp.textContent = 'Tick bars are currently supported for connected MetaTrader 5 symbols only.';
-        timeframeHelp.dataset.state = 'error';
-        return;
-      }
-      if (choice.timeframe) {
-        try {
-          const actualTimeframe = await applyTimeframe(cell.chart, choice.timeframe);
-          if (actualTimeframe !== choice.timeframe) {
-            timeframeHelp.textContent = `Could not load ${formatTimeframeLabel(choice.timeframe)} bars; the chart is still showing ${formatTimeframeLabel(actualTimeframe)}.`;
-            timeframeHelp.dataset.state = 'error';
-            return;
-          }
-          timeframeHelp.textContent = `Showing ${formatTimeframeLabel(actualTimeframe)} bars.`;
-          delete timeframeHelp.dataset.state;
-        } catch (error) {
-          timeframeHelp.textContent = `Could not load timeframe: ${error instanceof Error ? error.message : String(error)}`;
-          timeframeHelp.dataset.state = 'error';
-          return;
-        }
-      }
-      if (choice.pips) {
-        cell.chart.renderer.applyConfig({ chartTypes: { [choice.style]: { mode: 'pips', brickPips: String(choice.pips), customBrickPips: 0 } } });
-        selectedPipsByCell.set(cell.id, choice.pips);
-      }
-      try {
-        await setChartStyle(cell, choice.style);
-      } catch (error) {
-        timeframeHelp.textContent = error instanceof Error ? error.message : String(error);
-        timeframeHelp.dataset.state = 'error';
-        return;
-      }
-      updateChartStyleHelp(cell, choice.style);
-      chartTypeSelect.value = choice.style;
-      ctraderTimeframeMenu.open = false; syncChartControls();
-    });
-    list.append(button);
-  }
-  column.append(heading, list); ctraderTimeframeGrid.append(column);
-}
-
-addPeriodColumn('Standard', 'M', standardPeriods);
-addPeriodColumn('Tick', 'T', tickSizes.map(value => ({
-  label: `${value} ticks`,
-  timeframe: `T${value}`,
-  style: 'candles',
-})));
-addPeriodColumn('Renko', 'R', pipSizes.map(pips => ({ label: `${pips} pips`, style: 'renko', pips })));
-addPeriodColumn('Range', 'Ra', pipSizes.map(pips => ({ label: `${pips} pips`, style: 'range', pips })));
-addPeriodColumn('Heikin Ashi', 'H', standardPeriods.map(item => ({ ...item, style: 'heikinashi' })));
-
-applyTimeframeButton.addEventListener('click', async () => {
-  const amount = Number(customTimeframeValue.value);
-  const unit = customTimeframeUnit.value;
-  if (!Number.isSafeInteger(amount) || amount < 1) {
-    timeframeHelp.textContent = 'Enter a positive whole number.';
-    return;
-  }
-
-  const targetCell = workspace.cell(workspace.active.id);
-  if (!targetCell) {
-    timeframeHelp.textContent = 'Could not find the active chart.';
-    return;
-  }
-  let timeframe: string;
-  if (unit === 'ticks') {
-    if (!targetCell.chart.market.symbol?.startsWith('MT5:')) {
-      timeframeHelp.textContent = 'Tick bars are currently supported for connected MetaTrader 5 symbols only.';
-      timeframeHelp.dataset.state = 'error';
-      return;
-    }
-    if (amount > 10_000) {
-      timeframeHelp.textContent = 'Choose no more than 10,000 ticks per bar.';
-      timeframeHelp.dataset.state = 'error';
-      return;
-    }
-    timeframe = `T${amount}`;
-  } else {
-    const multiplier = unit === 'hours' ? 60 : unit === 'days' ? 1440 : 1;
-    const maxMinutes = unit === 'days' ? 30 * 1440 : unit === 'hours' ? 24 * 60 : 1440;
-    const minutes = amount * multiplier;
-    if (!Number.isSafeInteger(minutes) || minutes > maxMinutes) {
-      timeframeHelp.textContent = `Choose an interval no larger than ${unit === 'days' ? '30 days' : unit === 'hours' ? '24 hours' : '1,440 minutes'}.`;
-      return;
-    }
-    timeframe = unit === 'days' && amount === 1 ? 'D' : String(minutes);
-  }
-  applyTimeframeButton.disabled = true;
-  timeframeHelp.textContent = 'Loading timeframe…';
-  try {
-    const actualTimeframe = await applyTimeframe(targetCell.chart, timeframe);
-    syncChartControls();
-    if (actualTimeframe !== timeframe) {
-      timeframeHelp.textContent = `Timeframe change did not complete. The chart is still showing ${formatTimeframeLabel(actualTimeframe)} bars.`;
-      timeframeHelp.dataset.state = 'error';
-    } else {
-      timeframeHelp.textContent = `Showing ${formatTimeframeLabel(actualTimeframe)} bars.`;
-      delete timeframeHelp.dataset.state;
-      customTimeframeMenu.open = false;
-    }
-  } catch (error) {
-    syncChartControls();
-    timeframeHelp.textContent = `Could not load timeframe: ${error instanceof Error ? error.message : String(error)}`;
-    timeframeHelp.dataset.state = 'error';
-  } finally {
-    applyTimeframeButton.disabled = false;
-  }
-});
-
-const replayMenu = document.getElementById('replay-menu') as HTMLDetailsElement;
-const replayFrom = document.getElementById('replay-from') as HTMLInputElement;
-const replaySpeed = document.getElementById('replay-speed') as HTMLSelectElement;
-const replayStatus = document.getElementById('replay-status') as HTMLElement;
-const replayStart = document.getElementById('replay-start') as HTMLButtonElement;
-const replayStep = document.getElementById('replay-step') as HTMLButtonElement;
-const replayPlayPause = document.getElementById('replay-play-pause') as HTMLButtonElement;
-const replayStop = document.getElementById('replay-stop') as HTMLButtonElement;
-
-function openReplayControls(): void {
-  replayMenu.open = true;
-  replayMenu.querySelector<HTMLElement>('summary')?.focus();
-}
-
-function localDateTimeInputValue(timestamp: number): string {
-  const date = new Date(timestamp);
-  const localTime = new Date(timestamp - date.getTimezoneOffset() * 60_000);
-  return localTime.toISOString().slice(0, 16);
-}
-
-async function startReplayAt(from: number, cellId?: string): Promise<void> {
-  if (!Number.isFinite(from)) {
-    replayStatus.textContent = 'Choose a valid replay start date and time.';
-    return;
-  }
-  replayFrom.value = localDateTimeInputValue(from);
-  replayStart.disabled = true;
-  replayStatus.textContent = 'Preparing replay…';
-  replayActive = true;
-  try {
-    await workspace.replay.start(cellId ? { from, cell: cellId } : { from });
-    replayStatus.textContent = 'Replay paused. Step through bars or start playback.';
-  } catch (error) {
-    replayStatus.textContent = `Could not start replay: ${error instanceof Error ? error.message : String(error)}`;
-  } finally {
-    replayActive = workspace.replay.state.active;
-    replayStart.disabled = false;
-    syncReplayControls();
-  }
-}
-
-function syncReplayControls() {
-  const state = workspace.replay.state;
-  replayMenu.dataset.active = String(state.active);
-  replayStep.disabled = !state.active || state.remaining === 0;
-  replayPlayPause.disabled = !state.active || state.remaining === 0;
-  replayPlayPause.textContent = state.playing ? 'Pause' : 'Play';
-  replayStop.disabled = !state.active;
-  if (state.active && state.cursorTime != null) {
-    replayStatus.textContent = `${state.remaining} bars remaining · ${new Date(state.cursorTime).toLocaleString()}`;
-  } else if (!replayStatus.textContent.startsWith('Could not')) {
-    replayStatus.textContent = 'Choose a starting time, then start replay.';
-  }
-}
-
-replayMenu.addEventListener('toggle', () => {
-  if (!replayMenu.open || replayFrom.value) return;
-  const bounds = workspace.replay.bounds;
-  if (!bounds) {
-    replayStatus.textContent = 'No replayable chart history is loaded yet.';
-    return;
-  }
-  const timeframe = workspace.chart.market.timeframe ?? '60';
-  const suggestedStart = Math.max(bounds.first, bounds.last - timeframeToMs(timeframe) * 50);
-  replayFrom.value = localDateTimeInputValue(suggestedStart);
-});
-replayStart.addEventListener('click', async () => {
-  const from = new Date(replayFrom.value).getTime();
-  await startReplayAt(from);
-});
-replayStep.addEventListener('click', () => {
-  if (!workspace.replay.step()) replayStatus.textContent = 'No more bars to replay.';
-  syncReplayControls();
-});
-replayPlayPause.addEventListener('click', () => {
-  const state = workspace.replay.state;
-  if (state.playing) workspace.replay.pause();
-  else workspace.replay.play(Number(replaySpeed.value));
-  syncReplayControls();
-});
-replaySpeed.addEventListener('change', () => {
-  if (workspace.replay.state.playing) {
-    workspace.replay.play(Number(replaySpeed.value));
-  }
-});
-replayStop.addEventListener('click', () => {
-  replayActive = false;
-  workspace.replay.stop();
-  syncReplayControls();
-});
-for (const event of ['replay:start', 'replay:step', 'replay:play', 'replay:pause', 'replay:end'] as const) {
-  workspace.replay.on(event, () => {
-    replayActive = workspace.replay.state.active;
-    syncReplayControls();
-  });
-}
-syncReplayControls();
-chartTypeSelect.addEventListener('change', () => {
-  const cell = workspace.cell(workspace.active.id);
-  if (!cell) return;
-  void setChartStyle(cell, chartTypeSelect.value).then(() => {
-    updateChartStyleHelp(cell, chartTypeSelect.value);
-    syncChartControls();
-  }).catch(error => {
-    timeframeHelp.textContent = error instanceof Error ? error.message : String(error);
-    timeframeHelp.dataset.state = 'error';
-    syncChartControls();
-  });
-});
 const marketChangeListeners = new Map<string, () => void>();
-const loadedBarListeners = new Map<string, Array<() => void>>();
-const loadedBarCounts = new Map<string, { loaded: number; target: number }>();
-const loadedBarsLabel = document.getElementById('bottom-loaded-bars');
-const barCountFormatter = new Intl.NumberFormat();
-
-function renderLoadedBarCount(): void {
-  if (!loadedBarsLabel) return;
-  const cellId = workspace.active?.id;
-  const entry = cellId ? loadedBarCounts.get(cellId) : undefined;
-  if (!entry) {
-    loadedBarsLabel.textContent = 'Bars: loading…';
-    loadedBarsLabel.title = 'Chart history is loading.';
-    return;
-  }
-  const loaded = barCountFormatter.format(entry.loaded);
-  const target = Math.max(0, entry.target);
-  loadedBarsLabel.textContent = target > entry.loaded
-    ? `Bars: ${loaded} / ${barCountFormatter.format(target)}`
-    : `Bars: ${loaded}`;
-  loadedBarsLabel.title = `${loaded} chart bars loaded${target > entry.loaded ? ` of ${barCountFormatter.format(target)} requested` : ''}.`;
-}
-
-function setLoadedBarCount(cellId: string, loaded: number, target?: number): void {
-  const safeLoaded = Math.max(0, Math.floor(loaded));
-  const existing = loadedBarCounts.get(cellId);
-  const chart = workspace.cell(cellId)?.chart;
-  loadedBarCounts.set(cellId, {
-    loaded: safeLoaded,
-    target: Math.max(safeLoaded, Math.floor(target ?? existing?.target ?? chart?.market.bars ?? safeLoaded)),
-  });
-  if (workspace.active?.id === cellId) renderLoadedBarCount();
-}
-
-function watchCellLoadedBars(cellId: string): void {
-  if (loadedBarListeners.has(cellId)) return;
-  const cell = workspace.cell(cellId);
-  if (!cell) return;
-  const target = Math.max(0, Number(cell.chart.market.bars) || 0);
-  setLoadedBarCount(cellId, 0, target);
-  loadedBarListeners.set(cellId, [
-    cell.chart.on('load:end', event => setLoadedBarCount(cellId, event.bars, Number(cell.chart.market.bars) || event.bars)),
-    cell.chart.on('history:progress', event => setLoadedBarCount(cellId, event.loaded, event.target)),
-    cell.chart.on('history:complete', event => setLoadedBarCount(cellId, event.barsLoaded, Number(cell.chart.market.bars) || event.barsLoaded)),
-  ]);
-}
-
 function watchCellMarketChanges(cellId: string) {
   if (marketChangeListeners.has(cellId)) return;
   const cell = workspace.cell(cellId);
@@ -2006,601 +1513,68 @@ function watchCellMarketChanges(cellId: string) {
 }
 for (const cell of workspace.cells()) {
   watchCellMarketChanges(cell.id);
-  watchCellLoadedBars(cell.id);
+  loadedBarsController.watch(cell.id);
 }
 workspace.on('cell:created', event => {
   watchCellMarketChanges(event.id);
-  watchCellLoadedBars(event.id);
+  loadedBarsController.watch(event.id);
 });
 workspace.on('cell:destroyed', event => {
   marketChangeListeners.get(event.id)?.();
   marketChangeListeners.delete(event.id);
-  loadedBarListeners.get(event.id)?.forEach(dispose => dispose());
-  loadedBarListeners.delete(event.id);
-  loadedBarCounts.delete(event.id);
-  renderLoadedBarCount();
-});
-workspace.chart.on('priceStyle:change', event => {
-  if (Array.from(chartTypeSelect.options).some(option => option.value === event.to)) {
-    chartTypeSelect.value = event.to;
-  }
+  loadedBarsController.unwatch(event.id);
 });
 workspace.on('cell:active', () => {
   syncChartControls();
-  renderLoadedBarCount();
+  loadedBarsController.render();
 });
-renderLoadedBarCount();
+loadedBarsController.render();
 syncChartControls();
 
 const chartLayoutSelect = document.getElementById('chart-layout-select') as HTMLSelectElement;
 chartLayoutSelect.value = workspace.layout.id;
-chartLayoutSelect.addEventListener('change', () => workspace.setLayout(chartLayoutSelect.value));
-workspace.on('layout:changed', event => { chartLayoutSelect.value = event.layout; });
 
-const chartGroupColorSelect = document.getElementById('chart-group-color') as HTMLSelectElement;
-const chartGroupIndicator = document.getElementById('chart-group-indicator') as HTMLSpanElement | null;
-const groupColorHex: Record<string, string> = { red: '#ef4444', blue: '#3b82f6', green: '#22c55e', yellow: '#eab308', purple: '#a855f7' };
-
-function updateTopGroupIndicator(group: string) {
-  // The compact top bar no longer renders a separate group swatch. Keep this
-  // optional so its absence can never abort application startup and prevent all
-  // following toolbar handlers (tabs, workspace, theme and settings) registering.
-  if (!chartGroupIndicator) return;
-  if (group && groupColorHex[group]) {
-    chartGroupIndicator.style.backgroundColor = groupColorHex[group];
-    chartGroupIndicator.style.border = 'none';
-  } else {
-    chartGroupIndicator.style.backgroundColor = 'transparent';
-    chartGroupIndicator.style.border = '1px dashed #64748b';
-  }
-}
-
-function paintCellGroup(cellId: string) {
-  const group = groupByCellId[cellId] ?? '';
-  const color = group ? (groupColorHex[group] ?? '') : '';
-  const cell = workspace.cell(cellId);
-  if (cell) {
-    if (color) {
-      cell.host.style.setProperty('--vela-cell-group-color', color);
-      cell.host.dataset.groupColor = group;
-    } else {
-      cell.host.style.removeProperty('--vela-cell-group-color');
-      delete cell.host.dataset.groupColor;
-    }
-  }
-}
-
-async function setCellGroup(cellId: string, newGroup: string) {
-  const targetCell = workspace.cell(cellId);
-  if (!targetCell) return;
-
-  const oldGroup = groupByCellId[cellId] ?? '';
-  groupByCellId[cellId] = newGroup;
-
-  // When joining a color group, copy all settings from an existing chart in that group
-  if (newGroup && newGroup !== oldGroup) {
-    const existing = workspace.cells().find(c => c.id !== cellId && groupByCellId[c.id] === newGroup);
-    if (existing) {
-      // 1. Copy Asset (Symbol) ONLY — DO NOT copy timeframe! Each chart has its own timeframe.
-      const sourceSymbol = existing.chart.market.symbol;
-      if (sourceSymbol && sourceSymbol !== targetCell.chart.market.symbol) {
-        await targetCell.chart.setMarket({
-          symbol: sourceSymbol,
-        });
-      }
-
-      // 2. Copy Chart Style & Renderer Config
-      try {
-        const sourceConfig = existing.chart.renderer.getConfig();
-        if (sourceConfig) {
-          targetCell.chart.renderer.applyConfig(sourceConfig);
-        }
-      } catch (err) {
-        console.warn('Could not copy renderer config:', err);
-      }
-
-      // 3. Copy Indicators
-      try {
-        for (const ind of existing.chart.indicators()) {
-          if (ind.source) {
-            const existingInd = targetCell.chart.indicators().find(t => t.id === ind.id);
-            if (existingInd) {
-              if (existingInd.source !== ind.source) await existingInd.updateCode(ind.source);
-            } else {
-              await targetCell.chart.runIndicator(ind.source, {
-                id: ind.id,
-                language: 'pine',
-                title: ind.title,
-              });
-            }
-          } else if (ind.nativeType && !targetCell.chart.presentNativeIndicators().includes(ind.nativeType)) {
-            targetCell.chart.addNativeIndicator(ind.nativeType);
-          }
-        }
-        for (const targetInd of targetCell.chart.indicators()) {
-          if (targetInd.source && !existing.chart.indicators().some(i => i.id === targetInd.id)) {
-            targetInd.remove();
-          } else if (targetInd.nativeType && !existing.chart.presentNativeIndicators().includes(targetInd.nativeType)) {
-            targetInd.remove();
-          }
-        }
-        // 4. Copy Drawings
-        try {
-          if (existing.chart.drawings) {
-            const drawingsJson = existing.chart.drawings.toJSON();
-            if (drawingsJson && Array.isArray(drawingsJson) && drawingsJson.length > 0) {
-              targetCell.chart.drawings.fromJSON(drawingsJson);
-            }
-          }
-        } catch (err) {
-          console.warn('Could not copy drawings to grouped cell:', err);
-        }
-      } catch (err) {
-        console.warn('Could not copy indicators to grouped cell:', err);
-      }
-    }
-  }
-
-  paintCellGroup(cellId);
-
-  if (workspace.active?.id === cellId) {
-    chartGroupColorSelect.value = newGroup;
-    updateTopGroupIndicator(newGroup);
-  }
-
-  syncGroupSettings();
-  cellControlsManager?.updateAll();
-  persistCellGroupState();
-  renderChartTabs();
-}
-
-function syncGroupSettings() {
-  const syncGroups: Record<string, string> = {};
-  for (const [id, grp] of Object.entries(groupByCellId)) {
-    if (grp) syncGroups[id] = grp;
-  }
-  workspace.sync.set('symbol', syncGroups);
-  workspace.sync.set('timeframe', false); // Never sync timeframe — charts keep independent timeframes
-  workspace.sync.set('style', syncGroups);
-  workspace.sync.set('drawings', syncGroups);
-  if (propagatingGroupState) return;
-  propagatingGroupState = true;
-  try {
-    const cells = workspace.cells();
-    const groupedCells = new Map<string, typeof cells>();
-    for (const cell of cells) {
-      const group = groupByCellId[cell.id] ?? '';
-      if (!group) continue;
-      const members = groupedCells.get(group) ?? [];
-      members.push(cell);
-      groupedCells.set(group, members);
-    }
-    for (const members of groupedCells.values()) {
-      const source = members.find(cell => cell.id === workspace.active?.id) ?? members[0];
-      for (const target of members) {
-        if (target.id === source.id) continue;
-        for (const indicator of source.chart.indicators()) {
-          if (indicator.source) {
-            const existing = target.chart.indicators().find(item => item.id === indicator.id);
-            if (existing) {
-              if (existing.source !== indicator.source) void existing.updateCode(indicator.source);
-            } else void target.chart.runIndicator(indicator.source, { id: indicator.id, language: 'pine', title: indicator.title });
-          } else if (indicator.nativeType && !target.chart.presentNativeIndicators().includes(indicator.nativeType)) {
-            target.chart.addNativeIndicator(indicator.nativeType);
-          }
-        }
-        for (const indicator of target.chart.indicators()) {
-          if (indicator.source && !source.chart.indicators().some(item => item.id === indicator.id)) indicator.remove();
-          else if (indicator.nativeType && !source.chart.presentNativeIndicators().includes(indicator.nativeType)) indicator.remove();
-        }
-      }
-    }
-  } finally {
-    propagatingGroupState = false;
-  }
-}
-
-function persistCellGroupState() {
-  workspace.context().stateChanged();
-}
-
-const cellControlsManager = new ChartCellControlsManager({
-  getWorkspace: () => workspace,
-  getGroupForCell: (cellId: string) => groupByCellId[cellId] ?? '',
-  onSetCellGroup: (cellId: string, group: string) => setCellGroup(cellId, group),
+const workspaceFeatureLoaders = createWorkspaceFeatureLoaders({
+  workspace,
+  tabsState: chartTabsState,
+  maxTabs: OMEGA_TABS_MAX,
+  layoutId: chartTabsLayoutId,
+  isTabsLayout: isChartTabsLayout,
+  groupByCellId,
+  groupColorHex: CHART_GROUP_COLORS,
+  chartGridHost,
+  chartLayoutSelect,
+  onReplayActiveChange: active => { replayActive = active; },
 });
+const {
+  ensureChartTabs,
+  renderChartTabs,
+  setChartTabsEnabled,
+  ensureReplayControls,
+  openReplayControls,
+  startReplayAt,
+  openVisualBacktest,
+} = workspaceFeatureLoaders;
 
-function keyboardTargetAcceptsText(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return Boolean(target.closest('input, textarea, select, [contenteditable="true"], .monaco-editor, [role="textbox"], button, [role="button"]'));
-}
-
-// Open the same Indicators action exposed in the chart top bar. Space remains
-// available to text controls and buttons, where it has its normal native meaning.
-document.addEventListener('keydown', event => {
-  if (event.code !== 'Space' || event.repeat || event.altKey || event.ctrlKey || event.metaKey
-    || keyboardTargetAcceptsText(event.target)) return;
-  const indicatorsButton = [...document.querySelectorAll<HTMLButtonElement>('.vela-widget-action-left, .vela-widget-action')]
-    .find(button => button.textContent?.trim() === 'Indicators');
-  if (!indicatorsButton || indicatorsButton.disabled) return;
-  event.preventDefault();
-  indicatorsButton.click();
-});
-
-// Startup: default group is empty (no grouping) unless restored from profile
-for (const cell of workspace.cells()) {
-  const chartState = restoredWorkspaceState?.charts?.find((entry: { id: string }) => entry.id === cell.id);
-  const savedGroup = chartState?.ext?.['vela.chartGroup'];
-  groupByCellId[cell.id] = savedGroup && typeof savedGroup === 'object' && 'color' in savedGroup
-    ? String(savedGroup.color)
-    : '';
-  paintCellGroup(cell.id);
-  cellControlsManager.mountCell(cell.id);
-}
-
-const activeCellId = workspace.active?.id;
-const initialGroup = activeCellId ? (groupByCellId[activeCellId] ?? '') : '';
-chartGroupColorSelect.value = initialGroup;
-updateTopGroupIndicator(initialGroup);
-
-chartGroupColorSelect.addEventListener('change', () => {
-  if (!workspace.active) return;
-  void setCellGroup(workspace.active.id, chartGroupColorSelect.value);
-});
-
-workspace.on('cell:active', event => {
-  const grp = groupByCellId[event.id] ?? '';
-  chartGroupColorSelect.value = grp;
-  updateTopGroupIndicator(grp);
-  cellControlsManager.updateAll();
-  syncGroupSettings();
-});
-
-workspace.on('cell:created', event => {
-  groupByCellId[event.id] ??= '';
-  paintCellGroup(event.id);
-  cellControlsManager.mountCell(event.id);
-  cellControlsManager.updateAll();
-  syncGroupSettings();
-});
-
-workspace.on('cell:destroyed', event => {
-  cellControlsManager.unmountCell(event.id);
-  delete groupByCellId[event.id];
-  cellControlsManager.updateAll();
-  syncGroupSettings();
-  renderChartTabs();
-});
-
-syncGroupSettings();
-cellControlsManager.updateAll();
-
-const chartTabsBar = document.getElementById('chart-tabs-bar') as HTMLElement;
-const chartTabsList = document.getElementById('chart-tabs-list') as HTMLElement;
-const chartTabsToggle = document.getElementById('chart-tabs-toggle') as HTMLButtonElement;
-const chartTabsAdd = document.getElementById('chart-tabs-add') as HTMLButtonElement;
-
-function chartTabTimeframe(timeframe: string | undefined): string {
-  if (!timeframe) return '1h';
-  if (timeframe === '60') return '1h';
-  if (timeframe === 'D' || timeframe === '1D' || timeframe === '1440') return '1D';
-  if (timeframe === 'W' || timeframe === '1W' || timeframe === '10080') return '1W';
-  const minutes = Number(timeframe);
-  return Number.isFinite(minutes) && minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : timeframe;
-}
-
-function persistChartTabsPreference(): void {
-  localStorage.setItem('omega_chart_tabs_enabled', String(chartTabsEnabled));
-  localStorage.setItem('omega_chart_tabs_count', String(chartTabCount));
-  localStorage.setItem('omega_chart_tabs_previous_layout', chartTabsPreviousLayout);
-  workspace.context().stateChanged();
-}
-
-function renderChartTabs(): void {
-  if (!chartTabsBar || !chartTabsList || !chartTabsToggle || !chartTabsAdd) return;
-  const tabsMode = chartTabsEnabled && isChartTabsLayout(workspace.layout.id);
-  chartTabsBar.hidden = !tabsMode;
-  chartTabsToggle.setAttribute('aria-pressed', String(tabsMode));
-  chartTabsToggle.classList.toggle('active', tabsMode);
-  chartTabsToggle.textContent = tabsMode ? 'Hide tabs' : 'Chart tabs';
-  chartLayoutSelect.disabled = tabsMode;
-  chartLayoutSelect.title = tabsMode ? 'Disable Chart tabs to change the grid layout.' : '';
-  chartGridHost.classList.toggle('omega-tabs-mode', tabsMode);
-
-  for (const cell of workspace.cells()) {
-    if (tabsMode && cell.id === workspace.active?.id) cell.host.dataset.omegaTabActive = 'true';
-    else delete cell.host.dataset.omegaTabActive;
-  }
-  if (!tabsMode) {
-    chartTabsList.replaceChildren();
-    return;
-  }
-
-  const cells = workspace.cells().slice(0, chartTabCount);
-  const fragment = document.createDocumentFragment();
-  for (const [index, cell] of cells.entries()) {
-    const tab = document.createElement('div');
-    tab.className = 'chart-tab';
-    tab.role = 'tab';
-    const active = cell.id === workspace.active?.id;
-    tab.setAttribute('aria-selected', String(active));
-    tab.tabIndex = active ? 0 : -1;
-    const group = groupByCellId[cell.id] ?? '';
-    tab.title = `Chart ${index + 1}: ${cell.chart.market.symbol || 'Chart'} · ${chartTabTimeframe(cell.chart.market.timeframe)}${group ? ` · ${group} group` : ''}`;
-    const swatch = document.createElement('span');
-    swatch.className = 'chart-tab-group';
-    if (group && groupColorHex[group]) {
-      swatch.style.backgroundColor = groupColorHex[group];
-      swatch.style.borderStyle = 'solid';
-      swatch.style.borderColor = groupColorHex[group];
-    }
-    const label = document.createElement('span');
-    label.className = 'chart-tab-label';
-    label.textContent = `${cell.chart.market.symbol || `Chart ${index + 1}`} · ${chartTabTimeframe(cell.chart.market.timeframe)}`;
-    const activate = document.createElement('button');
-    activate.className = 'chart-tab-activate';
-    activate.type = 'button';
-    activate.tabIndex = active ? 0 : -1;
-    activate.append(swatch, label);
-    activate.addEventListener('click', () => workspace.setActiveCell(cell.id));
-    tab.append(activate);
-    if (chartTabCount > 1) {
-      const close = document.createElement('button');
-      close.className = 'chart-tab-close';
-      close.type = 'button';
-      close.title = `Close chart ${index + 1}`;
-      close.setAttribute('aria-label', `Close chart ${index + 1}`);
-      close.textContent = '×';
-      close.addEventListener('click', event => {
-        event.stopPropagation();
-        closeChartTab(cell.id);
-      });
-      tab.append(close);
-    }
-    fragment.append(tab);
-  }
-  chartTabsList.replaceChildren(fragment);
-  chartTabsAdd.disabled = chartTabCount >= OMEGA_TABS_MAX;
-  chartTabsAdd.title = chartTabsAdd.disabled ? 'Maximum of 8 chart tabs' : 'Open another chart tab';
-}
-
-function setChartTabsEnabled(enabled: boolean): void {
-  if (enabled === chartTabsEnabled && (enabled ? isChartTabsLayout(workspace.layout.id) : !isChartTabsLayout(workspace.layout.id))) {
-    renderChartTabs();
-    return;
-  }
-  if (enabled) {
-    if (!isChartTabsLayout(workspace.layout.id)) {
-      chartTabsPreviousLayout = workspace.layout.id;
-      chartTabCount = Math.max(chartTabCount, workspace.cells().length);
-    }
-    chartTabsEnabled = true;
-    workspace.setLayout(chartTabsLayoutId(chartTabCount));
-  } else {
-    chartTabsEnabled = false;
-    workspace.setLayout(chartTabsPreviousLayout || '1');
-  }
-  persistChartTabsPreference();
-  renderChartTabs();
-  requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
-}
-
-function addChartTab(): void {
-  if (!chartTabsEnabled) setChartTabsEnabled(true);
-  if (chartTabCount >= OMEGA_TABS_MAX) return;
-  chartTabCount += 1;
-  workspace.setLayout(chartTabsLayoutId(chartTabCount));
-  const cell = workspace.cells()[chartTabCount - 1];
-  if (cell) workspace.setActiveCell(cell.id);
-  persistChartTabsPreference();
-  renderChartTabs();
-}
-
-function closeChartTab(cellId: string): void {
-  if (!chartTabsEnabled || chartTabCount <= 1) return;
-  const cells = workspace.cells();
-  const closingCell = workspace.cell(cellId);
-  const lastCell = cells[chartTabCount - 1];
-  if (!closingCell || !lastCell) return;
-  if (closingCell.id !== lastCell.id) workspace.swapCells(closingCell.id, lastCell.id);
-  chartTabCount -= 1;
-  workspace.setLayout(chartTabsLayoutId(chartTabCount));
-  const nextActive = workspace.cells()[Math.min(cells.indexOf(closingCell), chartTabCount - 1)] ?? workspace.cells()[0];
-  if (nextActive) workspace.setActiveCell(nextActive.id);
-  persistChartTabsPreference();
-  renderChartTabs();
-}
-
-chartTabsToggle.addEventListener('click', () => setChartTabsEnabled(!chartTabsEnabled));
-chartTabsAdd.addEventListener('click', addChartTab);
-workspace.on('cell:active', renderChartTabs);
-workspace.on('cell:created', renderChartTabs);
-renderChartTabs();
-
-initializeVisualBacktest(
-  workspace as any,
-  () => {
-    const originalCell = workspace.active;
-    addChartTab();
-    const testCell = workspace.active;
-    if (!testCell || testCell.id === originalCell.id) return null;
-    testCell.host.dataset.omegaVisualBacktest = 'true';
-    renderChartTabs();
-    return testCell as any;
+const chartGroups = initializeChartGroups({
+  workspace,
+  chartGridHost,
+  groupByCellId,
+  getInitialGroup: cellId => {
+    const chartState = restoredWorkspaceState?.charts?.find((entry: { id: string }) => entry.id === cellId);
+    const savedGroup = chartState?.ext?.['vela.chartGroup'];
+    return savedGroup && typeof savedGroup === 'object' && 'color' in savedGroup
+      ? String(savedGroup.color)
+      : '';
   },
-  () => {
-    const button = [...document.querySelectorAll<HTMLButtonElement>('.vela-widget-action-left, .vela-widget-action')]
-      .find(item => item.textContent?.trim() === 'Indicators');
-    button?.click();
-  },
-  () => document.getElementById('editor-toggle-btn')?.click(),
-);
+  renderChartTabs: () => workspaceFeatureLoaders.renderChartTabs(),
+  isPropagating: () => propagatingGroupState,
+  setPropagating: value => { propagatingGroupState = value; },
+});
+const { setCellGroup } = chartGroups;
 
-function initializePaperTradeDrag() {
-  const widget = document.getElementById('chart-paper-trade-controls');
-  const handle = document.getElementById('paper-trade-drag-handle');
-  const coordinateRoot = document.getElementById('app-container');
-  if (!widget || !handle || !coordinateRoot) return;
-
-  const STORAGE_KEY = 'omega-paper-trade-pos';
-  const getCoordinateSpace = () => {
-    const rect = coordinateRoot.getBoundingClientRect();
-    return {
-      left: rect.left,
-      top: rect.top,
-      scaleX: coordinateRoot.offsetWidth > 0 ? rect.width / coordinateRoot.offsetWidth : 1,
-      scaleY: coordinateRoot.offsetHeight > 0 ? rect.height / coordinateRoot.offsetHeight : 1,
-    };
-  };
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    try {
-      const pos = JSON.parse(saved);
-      if (typeof pos.x === 'number' && typeof pos.y === 'number') {
-        const { scaleX, scaleY } = getCoordinateSpace();
-        const legacyPosition = pos.coordinateSpace !== 'app';
-        widget.style.position = 'fixed';
-        widget.style.left = `${legacyPosition ? pos.x / scaleX : pos.x}px`;
-        widget.style.top = `${legacyPosition ? pos.y / scaleY : pos.y}px`;
-        widget.style.transform = 'none';
-      }
-    } catch {}
-  }
-
-  let isDragging = false;
-  let startX = 0;
-  let startY = 0;
-  let scaleX = 1;
-  let scaleY = 1;
-  let initialLeft = 0;
-  let initialTop = 0;
-  let pointerId: number | null = null;
-
-  const startDrag = (e: PointerEvent) => {
-    const target = e.target;
-    // The complete non-interactive part of the compact panel is a drag zone.
-    // Do not hijack normal controls such as quantity, Buy, Sell or settings.
-    if (target instanceof Element && target.closest('button, input, select, textarea, a, label')) return;
-    if (e.button !== 0 || isDragging) return;
-    isDragging = true;
-    pointerId = e.pointerId;
-    const rect = widget.getBoundingClientRect();
-    const coordinateSpace = getCoordinateSpace();
-    scaleX = coordinateSpace.scaleX || 1;
-    scaleY = coordinateSpace.scaleY || 1;
-    widget.style.position = 'fixed';
-    widget.style.transform = 'none';
-    initialLeft = (rect.left - coordinateSpace.left) / scaleX;
-    initialTop = (rect.top - coordinateSpace.top) / scaleY;
-    widget.style.left = `${initialLeft}px`;
-    widget.style.top = `${initialTop}px`;
-    startX = e.clientX;
-    startY = e.clientY;
-    try { widget.setPointerCapture(e.pointerId); } catch { /* global listeners below remain reliable */ }
-    e.preventDefault();
-    e.stopPropagation();
-  };
-  widget.addEventListener('pointerdown', startDrag);
-
-  const moveDrag = (e: PointerEvent) => {
-    if (!isDragging || e.pointerId !== pointerId) return;
-    const coordinateSpace = getCoordinateSpace();
-    const dx = (e.clientX - startX) / scaleX;
-    const dy = (e.clientY - startY) / scaleY;
-    const minLeft = (10 - coordinateSpace.left) / scaleX;
-    const minTop = (40 - coordinateSpace.top) / scaleY;
-    const maxLeft = (window.innerWidth - coordinateSpace.left) / scaleX - widget.offsetWidth - 10;
-    const maxTop = (window.innerHeight - coordinateSpace.top) / scaleY - widget.offsetHeight - 10;
-    const newLeft = Math.max(minLeft, Math.min(maxLeft, initialLeft + dx));
-    const newTop = Math.max(minTop, Math.min(maxTop, initialTop + dy));
-    widget.style.left = `${newLeft}px`;
-    widget.style.top = `${newTop}px`;
-    e.preventDefault();
-  };
-
-  const stopDrag = (e?: PointerEvent) => {
-    if (!isDragging || (e && e.pointerId !== pointerId)) return;
-    isDragging = false;
-    if (pointerId !== null) {
-      try { widget.releasePointerCapture(pointerId); } catch { /* pointer may already be released */ }
-    }
-    pointerId = null;
-    const rect = widget.getBoundingClientRect();
-    const coordinateSpace = getCoordinateSpace();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      x: (rect.left - coordinateSpace.left) / coordinateSpace.scaleX,
-      y: (rect.top - coordinateSpace.top) / coordinateSpace.scaleY,
-      coordinateSpace: 'app',
-    }));
-  };
-
-  // Listen on the window rather than only on the handle. This remains reliable
-  // through chart canvas interactions, lost pointer capture and multi-monitor drags.
-  window.addEventListener('pointermove', moveDrag, { passive: false });
-  window.addEventListener('pointerup', stopDrag);
-  window.addEventListener('pointercancel', stopDrag);
-  window.addEventListener('blur', () => stopDrag());
-}
 
 initializePaperTradeDrag();
-
-async function runWorkspaceProfileAction(button: HTMLButtonElement, action: () => Promise<void>) {
-  if (button.disabled) return;
-  button.disabled = true;
-  try {
-    await action();
-  } finally {
-    button.disabled = false;
-  }
-}
-
-document.getElementById('workspace-save-profile')!.addEventListener('click', async () => {
-  const button = document.getElementById('workspace-save-profile') as HTMLButtonElement;
-  await runWorkspaceProfileAction(button, async () => {
-  const name = (document.getElementById('workspace-profile-name') as HTMLInputElement).value.trim();
-  const state = JSON.stringify(workspace.getState());
-  try {
-    if (window.velaWorkspaceFiles) {
-      const result = await window.velaWorkspaceFiles.saveProfile(name, state);
-      if (result.canceled) {
-        workspace.toast('Workspace save canceled.', 'info');
-      } else {
-        workspace.toast(`Workspace saved${result.path ? `: ${result.path}` : '.'}`, 'success');
-      }
-      return;
-    }
-    if (!name) { workspace.toast('Enter a workspace name first.', 'error'); return; }
-    localStorage.setItem(`vela-profile:${name}`, state);
-    workspace.toast(`Workspace "${name}" saved.`, 'success');
-  } catch (error) {
-    workspace.toast(error instanceof Error ? error.message : String(error), 'error');
-  }
-  });
-});
-
-document.getElementById('workspace-load-profile')!.addEventListener('click', async () => {
-  const button = document.getElementById('workspace-load-profile') as HTMLButtonElement;
-  await runWorkspaceProfileAction(button, async () => {
-  try {
-    if (window.velaWorkspaceFiles) {
-      const result = await window.velaWorkspaceFiles.loadProfile();
-      if (result.canceled) {
-        workspace.toast('Workspace load canceled.', 'info');
-      } else if (result.state) {
-        applyWorkspaceState(ensureWorkspaceScriptLedger(JSON.parse(result.state)));
-        workspace.toast(`Workspace loaded${result.path ? `: ${result.path}` : '.'}`, 'success');
-      }
-      return;
-    }
-    const name = (document.getElementById('workspace-profile-name') as HTMLInputElement).value.trim();
-    const state = name ? localStorage.getItem(`vela-profile:${name}`) : null;
-    if (!state) { workspace.toast('Workspace profile not found.', 'error'); return; }
-    applyWorkspaceState(ensureWorkspaceScriptLedger(JSON.parse(state)));
-  } catch (error) {
-    workspace.toast(error instanceof Error ? error.message : String(error), 'error');
-  }
-  });
-});
 
 function applyWorkspaceState(state: unknown) {
   workspace.applyState(state);
@@ -2608,27 +1582,7 @@ function applyWorkspaceState(state: unknown) {
   chartLayoutSelect.value = workspace.layout.id;
 }
 
-function ensureWorkspaceScriptLedger(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || !Array.isArray((value as { charts?: unknown }).charts)) return value;
-  const document = value as { charts: unknown[] };
-  return {
-    ...document,
-    charts: document.charts.map(chart => {
-      if (!chart || typeof chart !== 'object' || Array.isArray(chart)) return chart;
-      const entry = chart as { ext?: unknown };
-      const ext = entry.ext && typeof entry.ext === 'object' && !Array.isArray(entry.ext)
-        ? entry.ext as Record<string, unknown>
-        : {};
-      return {
-        ...entry,
-        ext: {
-          ...ext,
-          'omega.scriptIndicators': Array.isArray(ext['omega.scriptIndicators']) ? ext['omega.scriptIndicators'] : [],
-        },
-      };
-    }),
-  };
-}
+initializeWorkspaceProfiles(workspace, applyWorkspaceState);
 
 workspace.on('state:changed', () => {
   const state = workspace.getState();
@@ -2636,75 +1590,26 @@ workspace.on('state:changed', () => {
   void state;
 });
 
-const themeMenu = document.getElementById('theme-menu') as HTMLDetailsElement;
-const themeChoices = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-theme-choice]'));
-
-function updateThemeUI(theme: OmegaTheme) {
-  const baseTheme = theme === 'high-contrast' ? 'light' : theme;
-  document.documentElement.dataset.theme = baseTheme;
-  document.body.dataset.theme = baseTheme;
-  document.documentElement.dataset.themeVariant = theme === 'high-contrast' ? 'high-contrast' : '';
-  document.body.dataset.themeVariant = theme === 'high-contrast' ? 'high-contrast' : '';
-  document.documentElement.style.colorScheme = baseTheme;
-  themeMenu.dataset.active = 'true';
-  for (const choice of themeChoices) {
-    const selected = choice.dataset.themeChoice === theme;
-    choice.setAttribute('aria-checked', String(selected));
-    choice.classList.toggle('selected', selected);
-  }
-  document.body.style.backgroundColor = 'var(--omega-bg)';
-}
-
 function setTheme(theme: OmegaTheme) {
   const changed = theme !== currentTheme;
   currentTheme = theme;
   localStorage.setItem('vela_theme', currentTheme);
-  updateThemeUI(currentTheme);
+  applyThemeUi(currentTheme);
   refreshMarketFlowStyles();
   try {
-    workspace.setTheme(currentTheme === 'high-contrast' ? HIGH_CONTRAST_THEME : currentTheme);
+    workspace.setTheme(velaTheme(currentTheme));
   } catch (error) {
     console.error('Could not apply the selected theme to the chart workspace:', error);
   }
   try {
-    setPineEditorTheme?.(currentTheme === 'dark' ? 'dark' : 'light');
+    setPineEditorTheme?.(currentTheme === 'light' || currentTheme === 'high-contrast' ? 'light' : 'dark');
   } catch (error) {
     console.error('Could not apply the selected theme to the Pine editor:', error);
   }
   if (changed) workspace.context().stateChanged();
 }
 
-updateThemeUI(currentTheme);
-function selectThemeFromMenu(event: Event) {
-  const target = event.target;
-  const choice = target instanceof Element
-    ? target.closest<HTMLButtonElement>('[data-theme-choice]')
-    : null;
-  if (!choice || !themeMenu.contains(choice)) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const themeChoice = choice.dataset.themeChoice;
-  const theme: OmegaTheme = themeChoice === 'high-contrast' ? 'high-contrast' : themeChoice === 'light' ? 'light' : 'dark';
-  setTheme(theme);
-  themeMenu.open = false;
-}
-// Delegate from the menu instead of relying on individual popup buttons; this
-// remains reliable when Electron retargets a click from a native <details> menu.
-themeMenu.addEventListener('click', selectThemeFromMenu);
-
-// Native <details> menus do not consistently close on an outside click across
-// Electron versions, so make the toolbar menu behave like every other popup.
-document.addEventListener('pointerdown', event => {
-  if (themeMenu.open && event.target instanceof Node && !themeMenu.contains(event.target)) {
-    themeMenu.open = false;
-  }
-}, true);
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && themeMenu.open) {
-    themeMenu.open = false;
-    (themeMenu.querySelector('summary') as HTMLElement | null)?.focus();
-  }
-});
+initializeThemeMenu({ getTheme: () => currentTheme, setTheme });
 
 function installSettingsActionButtons(): void {
   // Vela Settings supports value rows only. Add true one-shot actions beside its
@@ -2736,8 +1641,7 @@ new MutationObserver(records => {
   if (settingsWasInserted) requestAnimationFrame(installSettingsActionButtons);
 }).observe(document.body, { childList: true, subtree: true });
 
-document.getElementById('top-chart-settings')!.addEventListener('click', event => {
-  event.preventDefault();
+function openChartSettings(): void {
   // The toolbar belongs to the chart the trader is working with, not necessarily
   // the first workspace chart. Its sections were registered when the cell mounted.
   const activeChart = workspace.active?.chart ?? workspace.chart;
@@ -2749,21 +1653,39 @@ document.getElementById('top-chart-settings')!.addEventListener('click', event =
     console.error('Could not open chart settings:', error);
     workspace.toast('Could not open chart settings. Please try again.', 'error');
   }
-});
+}
 
 // Keep the chart's right-click menu useful for the actions traders reach for
 // while working on the plot. These actions deliberately reuse the same paths as
 // the toolbar and Settings, so there is one source of truth for each command.
+const contextActionIcons: Record<string, string> = {
+  'omega-context-cancel-order': '<path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="m17 3 4 4m0-4-4 4"/>',
+  'omega-context-add-order': '<path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="M19 14v7m-3.5-3.5h7"/>',
+  'omega-context-volume': '<path d="M3 10v4h4l5 4V6l-5 4z"/><path d="M16 9a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12"/>',
+  'omega-context-bid-ask': '<path d="M3 7h18M3 17h18"/><path d="m7 4-4 3 4 3m10 4 4 3-4 3"/>',
+  'omega-context-reset-view': '<path d="M4 11a8 8 0 1 1 2 6"/><path d="M4 4v7h7"/><path d="M12 7v5l3 2"/>',
+  'omega-context-background': '<path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-3.7 2 2 0 0 1 1-3.8h2a3 3 0 0 0 3-3c0-4.1-4-7.5-9-7.5z"/><path d="M7.5 10h.01M11 7h.01M15.5 8.5h.01"/>',
+  'omega-context-theme-light': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>',
+  'omega-context-theme-dark': '<path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2z"/>',
+  'omega-context-pine': '<path d="m8 5-6 7 6 7m8-14 6 7-6 7m-2-15-4 16"/>',
+  'omega-context-replay': '<path d="M4 5v6h6"/><path d="M5.5 15a7 7 0 1 0 1-7"/><path d="m10 8 6 4-6 4z"/>',
+  'omega-context-replay-panel': '<path d="M3 4h18v16H3z"/><path d="M3 9h18m-6-5v5"/><path d="m8 12 5 3-5 3z"/>',
+};
+for (const [id, pathData] of Object.entries(contextActionIcons)) {
+  registerIcon(id, `<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${pathData}</svg>`);
+}
 registerWidgetAction({
   id: 'omega-context-cancel-pending-paper-order',
   target: 'context:body',
   label: 'Cancel pending paper order',
+  icon: 'omega-context-cancel-order',
   order: -21,
   when: context => context.pointer?.paneKind === 'price'
     && Number.isFinite(context.pointer.price)
-    && hasPendingPaperOrderAtPrice(context.chart, context.pointer?.price),
-  run: context => {
-    if (!cancelPendingPaperOrderAtPrice(context.chart, context.pointer?.price)) {
+    && Boolean(paperTradingModule?.hasPendingPaperOrderAtPrice(context.chart, context.pointer?.price)),
+  run: async context => {
+    const paperTrading = await ensurePaperTrading();
+    if (!paperTrading.cancelPendingPaperOrderAtPrice(context.chart, context.pointer?.price)) {
       context.toast('No pending paper order was found at that price.', 'error');
     }
   },
@@ -2772,18 +1694,23 @@ registerWidgetAction({
   id: 'omega-context-add-pending-paper-order',
   target: 'context:body',
   label: 'Add pending paper order…',
+  icon: 'omega-context-add-order',
   order: -20,
   when: context => context.pointer?.paneKind === 'price'
     && Number.isFinite(context.pointer.price)
     && Number(context.pointer.price) > 0
     && Boolean(context.symbol)
     && Boolean(context.chart.data.resolve(context.symbol)),
-  run: context => openPendingOrderDialog(context.chart, context.pointer?.price),
+  run: async context => {
+    const paperTrading = await ensurePaperTrading();
+    paperTrading.openPendingOrderDialog(context.chart, context.pointer?.price);
+  },
 });
 registerWidgetAction({
   id: 'omega-context-show-real-volumes',
   target: 'context:body',
   label: 'Show real volumes',
+  icon: 'omega-context-volume',
   order: -28,
   when: context => !context.chart.presentNativeIndicators().includes('volume'),
   run: context => {
@@ -2794,6 +1721,7 @@ registerWidgetAction({
   id: 'omega-context-hide-real-volumes',
   target: 'context:body',
   label: 'Hide real volumes',
+  icon: 'omega-context-volume',
   order: -28,
   when: context => context.chart.presentNativeIndicators().includes('volume'),
   run: context => {
@@ -2809,6 +1737,7 @@ registerWidgetAction({
   id: 'omega-context-show-bid-ask-lines',
   target: 'context:body',
   label: 'Show bid/ask lines',
+  icon: 'omega-context-bid-ask',
   order: -27,
   when: () => !showBidAskLines,
   run: () => {
@@ -2822,6 +1751,7 @@ registerWidgetAction({
   id: 'omega-context-hide-bid-ask-lines',
   target: 'context:body',
   label: 'Hide bid/ask lines',
+  icon: 'omega-context-bid-ask',
   order: -27,
   when: () => showBidAskLines,
   run: () => {
@@ -2835,6 +1765,7 @@ registerWidgetAction({
   id: 'omega-context-reset-view',
   target: 'context:body',
   label: 'Reset chart view (50 bars)',
+  icon: 'omega-context-reset-view',
   order: -29,
   run: context => {
     workspace.active.resetView();
@@ -2859,6 +1790,7 @@ registerWidgetAction({
   id: 'omega-context-background',
   target: 'context:body',
   label: 'Chart background color…',
+  icon: 'omega-context-background',
   order: 120,
   run: context => {
     context.chart.renderer.openSettings('Canvas');
@@ -2868,6 +1800,7 @@ registerWidgetAction({
   id: 'omega-context-theme-light',
   target: 'context:body',
   label: 'Switch to Light theme',
+  icon: 'omega-context-theme-light',
   order: 121,
   when: () => currentTheme !== 'light',
   run: context => {
@@ -2879,6 +1812,7 @@ registerWidgetAction({
   id: 'omega-context-theme-dark',
   target: 'context:body',
   label: 'Switch to Dark blue theme',
+  icon: 'omega-context-theme-dark',
   order: 121,
   when: () => currentTheme !== 'dark',
   run: context => {
@@ -2890,6 +1824,7 @@ registerWidgetAction({
   id: 'omega-context-pine-window',
   target: 'context:body',
   label: 'Open Pine Editor in new window',
+  icon: 'omega-context-pine',
   order: 122,
   run: context => {
     const button = document.getElementById('btn-open-standalone-editor') as HTMLButtonElement | null;
@@ -2904,6 +1839,7 @@ registerWidgetAction({
   id: 'omega-context-start-replay',
   target: 'context:body',
   label: 'Start replay from here',
+  icon: 'omega-context-replay',
   order: 123,
   when: context => Number.isFinite(context.pointer?.time),
   run: context => {
@@ -2922,6 +1858,7 @@ registerWidgetAction({
   id: 'omega-context-open-replay',
   target: 'context:body',
   label: 'Open Replay',
+  icon: 'omega-context-replay-panel',
   order: 124,
   run: () => openReplayControls(),
 });
@@ -2936,19 +1873,68 @@ if (bottomClock) {
   setInterval(updateClock, 1000);
 }
 
+const tradingSessionStatus = document.getElementById('trading-session-status');
+const tradingSessionLabel = document.getElementById('trading-session-label');
+if (tradingSessionStatus && tradingSessionLabel) {
+  const updateTradingSessions = () => {
+    const sessions = getOpenTradingSessions(new Date());
+    tradingSessionLabel.textContent = formatTradingSessionStatus(sessions);
+    tradingSessionStatus.dataset.open = String(sessions.length > 0);
+  };
+  updateTradingSessions();
+  setInterval(updateTradingSessions, 60_000);
+}
+
+const { initializeTopPanel } = await import('./topPanel');
+const { initializeBottomPanel } = await import('./bottomPanel');
+initializeBottomPanel({
+  mt5Enabled: mt5FeedModule.enabled,
+  onPaperTradingAction: async action => {
+    await ensurePaperTrading();
+    document.dispatchEvent(new CustomEvent(`omega:paper-trading:${action}`));
+  },
+});
+initializeTopPanel(workspace, {
+  onGroupChange: group => {
+    if (workspace.active) void chartGroups.setCellGroup(workspace.active.id, group);
+  },
+  onChartTabsToggle: () => {
+    void ensureChartTabs().then(controller => controller.toggle()).catch(error => {
+      console.error('Could not initialize chart tabs:', error);
+      workspace.toast('Chart tabs could not be loaded.', 'error');
+    });
+  },
+  onChartTabsAdd: () => {
+    void ensureChartTabs().then(controller => controller.addTab()).catch(error => {
+      console.error('Could not initialize chart tabs:', error);
+      workspace.toast('Chart tabs could not be loaded.', 'error');
+    });
+  },
+  onReplayMenuOpen: () => {
+    void ensureReplayControls().catch(error => {
+      console.error('Could not initialize Replay:', error);
+      workspace.toast('Replay could not be loaded.', 'error');
+    });
+  },
+  onVisualBacktest: () => {
+    void openVisualBacktest().catch(() => undefined);
+  },
+  onSettings: openChartSettings,
+});
+
 // Electron keeps the main window hidden until all core UI wiring and the first
 // workspace chart are ready, so users never see controls assembling in stages.
 setStartupStatus('Loading charts and finalizing your workspace…');
 let startupTimeout: number | undefined;
-const startupReady = Promise.all(workspace.cells().map(async cell => {
-  await cell.chart.ready();
-  await cell.chart.historyComplete();
-})).then(() => true).catch(error => {
-  console.error('Chart startup readiness failed:', error);
-  return false;
-});
+const startupChart = workspace.active?.chart;
+const startupReady = startupChart
+  ? startupChart.ready().then(() => true).catch(error => {
+      console.error('Chart startup readiness failed:', error);
+      return false;
+  })
+  : Promise.resolve(false);
 const fullStartupTimeout = new Promise<false>(resolve => {
-  startupTimeout = window.setTimeout(() => resolve(false), 30_000);
+  startupTimeout = window.setTimeout(() => resolve(false), 4_500);
 });
 const chartsReady = await Promise.race([startupReady, fullStartupTimeout]);
 window.clearTimeout(startupTimeout);
@@ -2957,6 +1943,10 @@ if (!chartsReady) {
   console.warn('The startup screen is closing while chart data continues to load.');
 } else {
   setStartupStatus('Workspace ready');
+}
+if (chartTabsState.enabled) {
+  const controller = await ensureChartTabs();
+  controller.setEnabled(true);
 }
 await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 startupScreen?.setAttribute('data-state', 'leaving');

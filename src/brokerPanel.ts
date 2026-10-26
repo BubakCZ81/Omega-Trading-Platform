@@ -1,3 +1,5 @@
+import type { OHLCV } from '@luxalgo/vela';
+
 export {};
 
 interface BrokerCredentialField {
@@ -100,7 +102,16 @@ interface BrokerSnapshot {
 interface BrokerBridge {
   listBrokers(): Promise<BrokerInfo[]>;
   connectReadOnly(brokerId: string, credentials: Record<string, string>): Promise<BrokerSnapshot>;
+  saveAlpacaCredentials?(credentials: { apiKey: string; apiSecret: string }): Promise<{ configured: boolean }>;
+  hasSavedAlpacaCredentials?(): Promise<boolean>;
   fetchSnapshot(): Promise<BrokerSnapshot>;
+  fetchHistoricalBars(request: {
+    symbol: string;
+    timeframe: '1m' | '5m' | '15m' | '1h' | '1d';
+    from: number;
+    to: number;
+    limit: number;
+  }): Promise<OHLCV[] | null>;
   hasSavedCTraderCredentials?(): Promise<boolean>;
   cTraderDataFeedOnly?: boolean;
   authorizeCTrader(credentials: { clientId: string; clientSecret: string; allowTrading: boolean }): Promise<CTraderAuthorization>;
@@ -113,7 +124,15 @@ interface BrokerBridge {
     stopLoss: number;
     takeProfit?: number;
     confirmed: boolean;
-  }): Promise<{ positionId: string; executionType?: string; protected: true }>;
+  }): Promise<{
+    positionId: string;
+    executionType?: string | number;
+    protected: true;
+    partialFill: boolean;
+    filledVolume?: string;
+    remainderStatus: 'not-applicable' | 'cancelled' | 'filled' | 'open' | 'unknown';
+    remainderCancellationError?: string;
+  }>;
   reconcileCTraderAccount(): Promise<CTraderReconciliation>;
   onCTraderQuote(callback: (quote: CTraderQuote) => void): () => void;
   disconnect(): Promise<boolean>;
@@ -132,6 +151,7 @@ const brokerSelect = document.getElementById('broker-select') as HTMLSelectEleme
 const fieldsHost = document.getElementById('broker-fields');
 const setupNote = document.getElementById('broker-setup-note');
 const connectButton = document.getElementById('broker-connect') as HTMLButtonElement | null;
+const saveCredentialsButton = document.getElementById('broker-save-credentials') as HTMLButtonElement | null;
 const refreshButton = document.getElementById('broker-refresh') as HTMLButtonElement | null;
 const disconnectButton = document.getElementById('broker-disconnect') as HTMLButtonElement | null;
 const status = document.getElementById('broker-status');
@@ -158,6 +178,7 @@ const ctraderPositionsList = document.getElementById('ctrader-positions-list');
 
 let brokers: BrokerInfo[] = [];
 let activeBrokerId: string | null = null;
+let providerTransitionRevision = 0;
 let cTraderAccountId: string | null = null;
 let cTraderAccountEnvironment: 'live' | 'demo' | null = null;
 const cTraderQuotes = new Map<string, CTraderQuote>();
@@ -178,8 +199,10 @@ function renderCredentialFields() {
   fieldsHost.replaceChildren();
   const broker = selectedBroker();
   const isCTrader = broker?.id === 'ctrader';
+  const isAlpaca = broker?.id === 'alpaca';
   setupNote.textContent = broker?.readOnlySetup ?? '';
   if (connectButton) connectButton.textContent = isCTrader ? 'Authorize with cTrader' : 'Connect Read Only';
+  if (saveCredentialsButton) saveCredentialsButton.hidden = !isAlpaca;
   if (ctraderAccountControls) ctraderAccountControls.hidden = !isCTrader;
   if (ctraderPermissions) ctraderPermissions.hidden = !isCTrader || window.velaBroker?.cTraderDataFeedOnly === true;
   if (ctraderMarketControls) ctraderMarketControls.hidden = true;
@@ -243,8 +266,16 @@ function renderSnapshot(snapshot: BrokerSnapshot) {
 	return;
   }
 
-  for (const account of snapshot.accounts) {
-	const card = document.createElement('section');
+	for (const account of snapshot.accounts) {
+		document.dispatchEvent(new CustomEvent('omega:trading-account-available', {
+		  detail: {
+			id: `${snapshot.broker}:${account.name}`,
+			label: `${snapshot.broker} · ${account.name}`,
+			mode: (account.environment ?? 'connected').toUpperCase(),
+			detail: `${snapshot.broker} data · read-only`,
+		  },
+		}));
+		const card = document.createElement('section');
 	card.className = 'broker-account';
 	const heading = document.createElement('div');
 	heading.className = 'broker-account-heading';
@@ -310,7 +341,7 @@ function renderCTraderQuotes() {
   }
 }
 
-async function authorizeCTrader(credentials: Record<string, string>) {
+async function authorizeCTrader(credentials: Record<string, string>, expectedRevision: number) {
   if (!window.velaBroker || !connectButton) return;
   accountsHost?.replaceChildren();
   ctraderAccountSelect?.replaceChildren();
@@ -333,6 +364,7 @@ async function authorizeCTrader(credentials: Record<string, string>) {
 	credentials.clientId = '';
 	credentials.clientSecret = '';
 	const authorization = await authorizationRequest;
+	if (expectedRevision !== providerTransitionRevision) return;
 	for (const account of authorization.accounts) {
 	  const option = document.createElement('option');
 	  option.value = account.id;
@@ -340,12 +372,15 @@ async function authorizeCTrader(credentials: Record<string, string>) {
 	  ctraderAccountSelect?.append(option);
 	}
 	activeBrokerId = 'ctrader';
+	document.dispatchEvent(new CustomEvent('omega:trading-broker-connected', { detail: 'ctrader' }));
 	if (disconnectButton) disconnectButton.hidden = false;
 	setStatus(authorization.warnings.length
 	  ? `Authorized. Some environments could not be queried: ${authorization.warnings.join(' ')}`
 	  : `Authorized. Found ${authorization.accounts.length} cTrader account(s). Choose one to load its assets and symbols.${allowTrading ? ' Trading permission was requested; live orders are still locked.' : ''}`);
   } catch (error) {
-	setStatus(error instanceof Error ? error.message : String(error), true);
+	if (expectedRevision === providerTransitionRevision) {
+	  setStatus(error instanceof Error ? error.message : String(error), true);
+	}
   } finally {
 	for (const input of fieldsHost?.querySelectorAll<HTMLInputElement>('input[data-credential-key]') ?? []) input.value = '';
 	connectButton.disabled = false;
@@ -354,16 +389,27 @@ async function authorizeCTrader(credentials: Record<string, string>) {
 
 async function selectCTraderAccount() {
   if (!window.velaBroker || !ctraderAccountSelect || !ctraderSelectAccountButton) return;
+  const expectedRevision = providerTransitionRevision;
   ctraderSelectAccountButton.disabled = true;
+  publishCTraderChartPositions([]);
   setStatus('Connecting to the selected cTrader account and loading its instruments…');
   try {
 	const details = await window.velaBroker.selectCTraderAccount(ctraderAccountSelect.value);
+	if (expectedRevision !== providerTransitionRevision) return;
 	cTraderAccountId = details.account.id;
 	cTraderAccountEnvironment = details.account.environment;
 	cTraderQuotes.clear();
 	cTraderSymbols.clear();
 	for (const symbol of details.symbols) cTraderSymbols.set(symbol.id, symbol.name);
 	document.dispatchEvent(new CustomEvent('omega:ctrader-account-selected', { detail: details.symbols }));
+	document.dispatchEvent(new CustomEvent('omega:trading-account-available', {
+	  detail: {
+		id: `ctrader:${details.account.id}`,
+		label: `cTrader · ${details.account.login || details.account.id}`,
+		mode: details.account.environment.toUpperCase(),
+		detail: details.account.tradingEnabled ? 'cTrader account selected' : 'cTrader data · read-only',
+	  },
+	}));
 	ctraderPositionsList?.replaceChildren();
 	if (ctraderSymbolSelect) {
 	  ctraderSymbolSelect.replaceChildren();
@@ -415,7 +461,9 @@ async function selectCTraderAccount() {
 	  : 'cTrader account connected for read-only data. Choose a symbol to load chart history and live quotes.');
 	if (details.account.tradingEnabled) await refreshCTraderPositions();
   } catch (error) {
-	setStatus(error instanceof Error ? error.message : String(error), true);
+	if (expectedRevision === providerTransitionRevision) {
+	  setStatus(error instanceof Error ? error.message : String(error), true);
+	}
   } finally {
 	ctraderSelectAccountButton.disabled = false;
   }
@@ -426,7 +474,21 @@ function cTraderSymbolName(symbolId: string | number | undefined): string {
   return cTraderSymbols.get(key) ?? (key || 'Unknown symbol');
 }
 
+function publishCTraderChartPositions(positions: CTraderPosition[]): void {
+  const detail = positions.map(position => ({
+	positionId: String(position.positionId ?? ''),
+	symbol: cTraderSymbolName(position.symbolId),
+	side: String(position.tradeData?.tradeSide ?? ''),
+	volume: String(position.tradeData?.volume ?? ''),
+	entryPrice: Number(position.price),
+	stopLoss: position.stopLoss,
+	takeProfit: position.takeProfit,
+  }));
+  document.dispatchEvent(new CustomEvent('omega:ctrader-positions-updated', { detail }));
+}
+
 function renderCTraderPositions(snapshot: CTraderReconciliation) {
+  publishCTraderChartPositions(snapshot.positions);
   if (!ctraderPositionsList) return;
   ctraderPositionsList.replaceChildren();
   ctraderPositionsList.dataset.state = '';
@@ -495,7 +557,7 @@ async function subscribeCTraderSymbol() {
 
 async function placeDemoCTraderOrder() {
   if (!window.velaBroker || !ctraderSymbolSelect || !ctraderPlaceDemoOrder || !ctraderOrderSide
-    || !ctraderOrderVolume || !ctraderOrderStop) return;
+    || !ctraderOrderVolume || !ctraderOrderStop || ctraderPlaceDemoOrder.disabled) return;
   const symbolId = ctraderSymbolSelect.value;
   const symbol = ctraderSymbolSelect.selectedOptions[0]?.textContent || symbolId;
   const volume = Number(ctraderOrderVolume.value);
@@ -510,17 +572,16 @@ async function placeDemoCTraderOrder() {
 	return;
   }
   const side = ctraderOrderSide.value === 'SELL' ? 'SELL' : 'BUY';
-  const confirmed = window.confirm(
-	`Send DEMO ${side} market order for ${volume} units of ${symbol}?\nStop loss: ${stopLoss}${takeProfit === undefined ? '' : `\nTake profit: ${takeProfit}`}\n\nThe app will attach protection after the fill. If protection fails, it will attempt to close the demo position.`,
-  );
-  if (!confirmed) return;
-
   ctraderPlaceDemoOrder.disabled = true;
-  if (ctraderTradeStatus) {
-	ctraderTradeStatus.dataset.state = '';
-	ctraderTradeStatus.textContent = 'Sending demo order and applying stop-loss protection…';
-  }
   try {
+	const confirmed = window.confirm(
+	  `Send DEMO ${side} market order for ${volume} units of ${symbol}?\nStop loss: ${stopLoss}${takeProfit === undefined ? '' : `\nTake profit: ${takeProfit}`}\n\nThe app will attach protection after the fill, and cancel any unfilled remainder if the order is only partially filled. If protection fails, it will attempt to close the demo position.`,
+	);
+	if (!confirmed) return;
+	if (ctraderTradeStatus) {
+	  ctraderTradeStatus.dataset.state = '';
+	  ctraderTradeStatus.textContent = 'Sending demo order and applying stop-loss protection…';
+	}
 	const result = await window.velaBroker.placeDemoCTraderMarketOrder({
 	  symbolId,
 	  side,
@@ -529,7 +590,22 @@ async function placeDemoCTraderOrder() {
 	  ...(takeProfit === undefined ? {} : { takeProfit }),
 	  confirmed: true,
 	});
-	if (ctraderTradeStatus) ctraderTradeStatus.textContent = `Demo position ${result.positionId} filled and protected.`;
+	if (ctraderTradeStatus) {
+	  if (!result.partialFill) {
+		ctraderTradeStatus.textContent = `Demo position ${result.positionId} filled and protected.`;
+	  } else {
+		const remainder = result.remainderStatus === 'cancelled'
+		  ? 'unfilled remainder cancelled'
+		  : result.remainderStatus === 'filled'
+			? 'remainder filled before cancellation'
+			: result.remainderStatus === 'open'
+			  ? 'unfilled remainder is still OPEN'
+			  : 'remainder status is UNKNOWN';
+		const needsAttention = result.remainderStatus === 'open' || result.remainderStatus === 'unknown';
+		ctraderTradeStatus.dataset.state = needsAttention ? 'error' : '';
+		ctraderTradeStatus.textContent = `PARTIAL demo fill: position ${result.positionId}, ${result.filledVolume ?? 'unknown'} volume, protected; ${remainder}.${result.remainderCancellationError ? ` ${result.remainderCancellationError}` : ''}`;
+	  }
+	}
 	ctraderOrderVolume.value = '';
 	await refreshCTraderPositions();
   } catch (error) {
@@ -537,6 +613,7 @@ async function placeDemoCTraderOrder() {
 	  ctraderTradeStatus.dataset.state = 'error';
 	  ctraderTradeStatus.textContent = error instanceof Error ? error.message : String(error);
 	}
+	void refreshCTraderPositions();
   } finally {
 	ctraderPlaceDemoOrder.disabled = selectedBroker()?.id !== 'ctrader'
 	  || cTraderAccountEnvironment !== 'demo';
@@ -574,9 +651,24 @@ async function connectReadOnly() {
 	}
   }
 
+  if (broker.id === 'alpaca' && !credentials.apiKey?.trim() && !credentials.apiSecret?.trim()) {
+    try {
+      if (!await window.velaBroker.hasSavedAlpacaCredentials?.()) {
+        setStatus('Enter both Alpaca API credentials and click Save credentials first.', true);
+        fieldsHost?.querySelector<HTMLInputElement>('input[data-credential-key="apiKey"]')?.focus();
+        return;
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+      return;
+    }
+  }
+
   connectButton.disabled = true;
+  document.dispatchEvent(new CustomEvent('omega:trading-broker-connecting', { detail: broker.id }));
+  const requestRevision = providerTransitionRevision;
   if (broker.id === 'ctrader') {
-	await authorizeCTrader(credentials);
+	await authorizeCTrader(credentials, requestRevision);
 	return;
   }
 	activeBrokerId = null;
@@ -587,17 +679,48 @@ async function connectReadOnly() {
   try {
 	const startedAt = performance.now();
 	const snapshot = await window.velaBroker.connectReadOnly(broker.id, credentials);
+	if (requestRevision !== providerTransitionRevision) return;
 	document.dispatchEvent(new CustomEvent('omega:connection-latency', { detail: performance.now() - startedAt }));
 	activeBrokerId = broker.id;
 	renderSnapshot(snapshot);
-	setStatus(`Connected to ${broker.displayName}. Credentials are session-only.`);
+	document.dispatchEvent(new CustomEvent('omega:trading-broker-connected', { detail: broker.id }));
+	setStatus(broker.id === 'alpaca'
+	  ? `Connected to ${broker.displayName}. Saved encrypted credentials will be reused on this device.`
+	  : `Connected to ${broker.displayName}. Credentials are session-only.`);
 	if (refreshButton) refreshButton.hidden = false;
 	if (disconnectButton) disconnectButton.hidden = false;
   } catch (error) {
-	setStatus(error instanceof Error ? error.message : String(error), true);
+	if (requestRevision === providerTransitionRevision) {
+	  setStatus(error instanceof Error ? error.message : String(error), true);
+	}
   } finally {
 	for (const input of fieldsHost?.querySelectorAll<HTMLInputElement>('input[data-credential-key]') ?? []) input.value = '';
 	connectButton.disabled = false;
+  }
+}
+
+async function saveAlpacaCredentials() {
+  if (!window.velaBroker || selectedBroker()?.id !== 'alpaca' || !saveCredentialsButton) return;
+  const apiKey = fieldsHost?.querySelector<HTMLInputElement>('input[data-credential-key="apiKey"]')?.value.trim() ?? '';
+  const apiSecret = fieldsHost?.querySelector<HTMLInputElement>('input[data-credential-key="apiSecret"]')?.value.trim() ?? '';
+  if (!apiKey || !apiSecret) {
+    setStatus('Enter both Alpaca API credentials before saving.', true);
+    return;
+  }
+  if (!window.velaBroker.saveAlpacaCredentials) {
+    setStatus('Encrypted Alpaca credential storage is unavailable in this app version.', true);
+    return;
+  }
+  saveCredentialsButton.disabled = true;
+  setStatus('Encrypting and saving Alpaca credentials…');
+  try {
+    await window.velaBroker.saveAlpacaCredentials({ apiKey, apiSecret });
+    for (const input of fieldsHost?.querySelectorAll<HTMLInputElement>('input[data-credential-key]') ?? []) input.value = '';
+    setStatus('Alpaca credentials are encrypted and saved on this Windows device. Leave both fields blank next time and click Connect Read Only.');
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    saveCredentialsButton.disabled = false;
   }
 }
 
@@ -620,12 +743,14 @@ async function refreshSnapshot() {
 async function disconnect() {
   if (!window.velaBroker) return;
   try {
+	const disconnectedBrokerId = activeBrokerId;
 	await window.velaBroker.disconnect();
 	activeBrokerId = null;
 	cTraderAccountId = null;
 	cTraderAccountEnvironment = null;
 	cTraderQuotes.clear();
 	cTraderSymbols.clear();
+	publishCTraderChartPositions([]);
 	ctraderPositionsList?.replaceChildren();
 	accountsHost?.replaceChildren();
 	ctraderAccountSelect?.replaceChildren();
@@ -636,6 +761,7 @@ async function disconnect() {
 	if (refreshButton) refreshButton.hidden = true;
 	if (disconnectButton) disconnectButton.hidden = true;
 	document.dispatchEvent(new CustomEvent('omega:ctrader-disconnected'));
+	if (disconnectedBrokerId) document.dispatchEvent(new CustomEvent('omega:trading-broker-disconnected', { detail: disconnectedBrokerId }));
 	setStatus(window.velaBroker.cTraderDataFeedOnly
 	  ? 'Disconnected. Encrypted cTrader app credentials remain on this PC.'
 	  : 'Disconnected. No credentials were saved.');
@@ -656,13 +782,14 @@ function closeModal() {
   openButton?.focus();
 }
 
-openButton?.addEventListener('click', openModal);
+document.addEventListener('omega:bottom-panel:broker-toggle', openModal);
 closeButton?.addEventListener('click', closeModal);
 brokerSelect?.addEventListener('change', () => {
   if (activeBrokerId) void disconnect();
   renderCredentialFields();
 });
 connectButton?.addEventListener('click', () => void connectReadOnly());
+saveCredentialsButton?.addEventListener('click', () => void saveAlpacaCredentials());
 ctraderSelectAccountButton?.addEventListener('click', () => void selectCTraderAccount());
 ctraderSubscribeButton?.addEventListener('click', () => void subscribeCTraderSymbol());
 ctraderChartButton?.addEventListener('click', () => {
@@ -687,4 +814,25 @@ window.velaBroker?.onCTraderQuote((quote) => {
 document.addEventListener('omega:ctrader-feed-status', event => {
   const detail = (event as CustomEvent<{ message: string; error?: boolean }>).detail;
   if (detail?.message) setStatus(detail.message, detail.error === true);
+});
+
+document.addEventListener('omega:trading-broker-connecting', event => {
+  providerTransitionRevision += 1;
+  const nextBrokerId = (event as CustomEvent<string>).detail;
+  if (!nextBrokerId) return;
+  activeBrokerId = null;
+  cTraderAccountId = null;
+  cTraderAccountEnvironment = null;
+  cTraderQuotes.clear();
+  cTraderSymbols.clear();
+  publishCTraderChartPositions([]);
+  accountsHost?.replaceChildren();
+  ctraderPositionsList?.replaceChildren();
+  ctraderAccountSelect?.replaceChildren();
+  ctraderSymbolSelect?.replaceChildren();
+  ctraderQuotesHost?.replaceChildren();
+  if (ctraderMarketControls) ctraderMarketControls.hidden = true;
+  if (ctraderTradeControls) ctraderTradeControls.hidden = true;
+  if (refreshButton) refreshButton.hidden = true;
+  if (disconnectButton) disconnectButton.hidden = true;
 });

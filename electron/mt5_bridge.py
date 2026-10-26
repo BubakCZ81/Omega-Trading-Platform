@@ -43,6 +43,13 @@ def require_mt5():
         )
 
 
+def require_connected_terminal():
+    require_mt5()
+    terminal = mt5.terminal_info()
+    if terminal is None or not terminal.connected:
+        raise RuntimeError("MetaTrader is not connected. Connect to a broker in the MT5 Feed panel first.")
+
+
 def find_open_terminal():
     if sys.platform != "win32":
         return None
@@ -153,6 +160,7 @@ def get_bars(request):
 
 
 def get_quote(request):
+    require_connected_terminal()
     ticker_value = request.get("ticker")
     ticker = ticker_value.strip() if isinstance(ticker_value, str) else ""
     if not ticker or len(ticker) > 100:
@@ -172,6 +180,7 @@ def get_quote(request):
 
 
 def get_ticks(request):
+    require_connected_terminal()
     ticker_value = request.get("ticker")
     ticker = ticker_value.strip() if isinstance(ticker_value, str) else ""
     if not ticker or len(ticker) > 100:
@@ -204,6 +213,7 @@ def get_ticks(request):
 
 
 def get_market_book(request):
+    require_connected_terminal()
     ticker_value = request.get("ticker")
     ticker = ticker_value.strip() if isinstance(ticker_value, str) else ""
     if not ticker or len(ticker) > 100:

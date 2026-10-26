@@ -1,10 +1,16 @@
 import { timeframeToMs } from '@luxalgo/vela';
 import type { VelaWorkspace } from '@luxalgo/vela/workspace';
 
+export interface ReplayControls {
+  open(): void;
+  startAt(timestamp: number, cellId?: string): Promise<void>;
+  sync(): void;
+}
+
 export function initializeReplayControls(
   workspace: VelaWorkspace,
   onReplayActiveChanged: (active: boolean) => void,
-): void {
+): ReplayControls | null {
   const replayMenu = document.getElementById('replay-menu') as HTMLDetailsElement | null;
   const replayFrom = document.getElementById('replay-from') as HTMLInputElement | null;
   const replaySpeed = document.getElementById('replay-speed') as HTMLSelectElement | null;
@@ -14,7 +20,7 @@ export function initializeReplayControls(
   const replayPlayPause = document.getElementById('replay-play-pause') as HTMLButtonElement | null;
   const replayStop = document.getElementById('replay-stop') as HTMLButtonElement | null;
 
-  if (!replayMenu || !replayFrom || !replaySpeed || !replayStatus || !replayStart || !replayStep || !replayPlayPause || !replayStop) return;
+  if (!replayMenu || !replayFrom || !replaySpeed || !replayStatus || !replayStart || !replayStep || !replayPlayPause || !replayStop) return null;
 
   function localDateTimeInputValue(timestamp: number): string {
     const date = new Date(timestamp);
@@ -24,6 +30,7 @@ export function initializeReplayControls(
 
   function syncReplayControls() {
     const state = workspace.replay.state;
+    replayMenu!.dataset.active = String(state.active);
     replayStep!.disabled = !state.active || state.remaining === 0;
     replayPlayPause!.disabled = !state.active || state.remaining === 0;
     replayPlayPause!.textContent = state.playing ? 'Pause' : 'Play';
@@ -35,38 +42,45 @@ export function initializeReplayControls(
     }
   }
 
-  replayMenu.addEventListener('toggle', () => {
-    if (!replayMenu.open || replayFrom.value) return;
+  function suggestReplayStart(): void {
+    if (!replayMenu!.open || replayFrom!.value) return;
     const bounds = workspace.replay.bounds;
     if (!bounds) {
-      replayStatus.textContent = 'No replayable chart history is loaded yet.';
+      replayStatus!.textContent = 'No replayable chart history is loaded yet.';
       return;
     }
-    const timeframe = workspace.chart.market.timeframe ?? '60';
+    const timeframe = (workspace.active?.chart ?? workspace.chart).market.timeframe ?? '60';
     const suggestedStart = Math.max(bounds.first, bounds.last - timeframeToMs(timeframe) * 50);
-    replayFrom.value = localDateTimeInputValue(suggestedStart);
-  });
+    replayFrom!.value = localDateTimeInputValue(suggestedStart);
+  }
 
-  replayStart.addEventListener('click', async () => {
-    const from = new Date(replayFrom.value).getTime();
+  async function startAt(from: number, cellId?: string): Promise<void> {
     if (!Number.isFinite(from)) {
-      replayStatus.textContent = 'Choose a valid replay start date and time.';
+      replayStatus!.textContent = 'Choose a valid replay start date and time.';
       return;
     }
-    replayStart.disabled = true;
-    replayStatus.textContent = 'Preparing replay…';
+    replayFrom!.value = localDateTimeInputValue(from);
+    replayStart!.disabled = true;
+    replayStatus!.textContent = 'Preparing replay…';
     onReplayActiveChanged(true);
     try {
-      await workspace.replay.start({ from });
-      replayStatus.textContent = 'Replay paused. Step through bars or start playback.';
+      await workspace.replay.start(cellId ? { from, cell: cellId } : { from });
+      replayStatus!.textContent = 'Replay paused. Step through bars or start playback.';
     } catch (error) {
-      onReplayActiveChanged(workspace.replay.state.active);
-      replayStatus.textContent = `Could not start replay: ${error instanceof Error ? error.message : String(error)}`;
+      replayStatus!.textContent = `Could not start replay: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
       onReplayActiveChanged(workspace.replay.state.active);
-      replayStart.disabled = false;
+      replayStart!.disabled = false;
       syncReplayControls();
     }
+  }
+
+  replayMenu.addEventListener('toggle', () => {
+    suggestReplayStart();
+  });
+
+  replayStart.addEventListener('click', () => {
+    void startAt(new Date(replayFrom.value).getTime());
   });
 
   replayStep.addEventListener('click', () => {
@@ -101,4 +115,13 @@ export function initializeReplayControls(
   }
 
   syncReplayControls();
+  suggestReplayStart();
+  return {
+    open() {
+      replayMenu!.open = true;
+      replayMenu!.querySelector<HTMLElement>('summary')?.focus();
+    },
+    startAt,
+    sync: syncReplayControls,
+  };
 }

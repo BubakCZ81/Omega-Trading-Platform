@@ -14,6 +14,7 @@ const PAYLOAD = {
   amendPositionSltpRequest: 2110,
   closePositionRequest: 2111,
   newOrderRequest: 2106,
+  cancelOrderRequest: 2108,
   reconcileRequest: 2124,
   reconcileResponse: 2125,
   executionEvent: 2126,
@@ -204,6 +205,8 @@ class CTraderIntegration extends EventEmitter {
     this.cancelAuthorization = null;
     this.tradingPermissionRequested = false;
     this.lastQuotes = new Map();
+    this.authorizationRevision = 0;
+    this.demoOrderInProgress = false;
   }
 
   async authorize({ clientId, clientSecret, allowTrading = false }) {
@@ -213,19 +216,23 @@ class CTraderIntegration extends EventEmitter {
     if (typeof this.openExternal !== 'function') throw new Error('Opening the system browser is unavailable.');
     if (typeof this.fetchImpl !== 'function') throw new Error('HTTP requests are unavailable in this Electron runtime.');
 
-    await this.disconnect();
+    const revision = ++this.authorizationRevision;
+    await this.disconnectInternal();
+    if (revision !== this.authorizationRevision) throw new Error('cTrader authorization was superseded by a newer request.');
     this.credentials = { clientId: normalizedClientId, clientSecret: normalizedClientSecret };
     this.tradingPermissionRequested = allowTrading;
     try {
       const code = await this.receiveAuthorizationCode(normalizedClientId, allowTrading);
+      if (revision !== this.authorizationRevision) throw new Error('cTrader authorization was superseded by a newer request.');
       this.token = await this.exchangeToken({
         grant_type: 'authorization_code',
         code,
         redirect_uri: REDIRECT_URI,
       });
-      return await this.loadAccounts();
+      if (revision !== this.authorizationRevision) throw new Error('cTrader authorization was superseded by a newer request.');
+      return await this.loadAccounts(revision);
     } catch (error) {
-      await this.disconnect();
+      if (revision === this.authorizationRevision) await this.disconnectInternal();
       throw error;
     }
   }
@@ -318,12 +325,13 @@ class CTraderIntegration extends EventEmitter {
     return this.token.accessToken;
   }
 
-  async loadAccounts() {
+  async loadAccounts(revision = this.authorizationRevision) {
     const accessToken = await this.ensureAccessToken();
     const results = await Promise.allSettled([
-      this.loadAccountsFromEnvironment('live', LIVE_URL, accessToken),
-      this.loadAccountsFromEnvironment('demo', DEMO_URL, accessToken),
+      this.loadAccountsFromEnvironment('live', LIVE_URL, accessToken, revision),
+      this.loadAccountsFromEnvironment('demo', DEMO_URL, accessToken, revision),
     ]);
+    if (revision !== this.authorizationRevision) throw new Error('cTrader authorization was superseded by a newer request.');
     const warnings = [];
     const collected = [];
     for (let index = 0; index < results.length; index += 1) {
@@ -352,14 +360,16 @@ class CTraderIntegration extends EventEmitter {
     };
   }
 
-  async loadAccountsFromEnvironment(environment, url, accessToken) {
+  async loadAccountsFromEnvironment(environment, url, accessToken, revision = this.authorizationRevision) {
     const connection = new CTraderConnection(url, this.WebSocketCtor);
     try {
       await connection.request(PAYLOAD.applicationAuthRequest, {
         clientId: this.credentials.clientId,
         clientSecret: this.credentials.clientSecret,
       }, PAYLOAD.applicationAuthResponse);
+      if (revision !== this.authorizationRevision) throw new Error('cTrader authorization was superseded by a newer request.');
       const result = await connection.request(PAYLOAD.accountsByTokenRequest, { accessToken }, PAYLOAD.accountsByTokenResponse);
+      if (revision !== this.authorizationRevision) throw new Error('cTrader authorization was superseded by a newer request.');
       this.sessions.set(environment, connection);
       connection.on('spot', (payload) => this.handleSpot(environment, payload));
       return (result.ctidTraderAccount || []).map((account) => {
@@ -381,21 +391,25 @@ class CTraderIntegration extends EventEmitter {
   }
 
   async selectAccount(accountId) {
+    const revision = this.authorizationRevision;
     const account = this.accounts.get(String(accountId));
     if (!account) throw new Error('Select a cTrader account returned by authorization.');
     const session = account.session || this.sessions.get(account.environment);
     if (!session || session.closed) throw new Error(`The ${account.environment} cTrader connection is unavailable. Reauthorize and try again.`);
     const accessToken = await this.ensureAccessToken();
+    if (revision !== this.authorizationRevision) throw new Error('cTrader account selection was cancelled by a provider change.');
     await session.request(PAYLOAD.accountAuthRequest, {
       ctidTraderAccountId: account.id,
       accessToken,
     }, PAYLOAD.accountAuthResponse);
+    if (revision !== this.authorizationRevision) throw new Error('cTrader account selection was cancelled by a provider change.');
 
     const [traderResponse, symbolsResponse, assetsResponse] = await Promise.all([
       session.request(PAYLOAD.traderRequest, { ctidTraderAccountId: account.id }, PAYLOAD.traderResponse),
       session.request(PAYLOAD.symbolsListRequest, { ctidTraderAccountId: account.id }, PAYLOAD.symbolsListResponse),
       session.request(PAYLOAD.assetListRequest, { ctidTraderAccountId: account.id }, PAYLOAD.assetListResponse),
     ]);
+    if (revision !== this.authorizationRevision) throw new Error('cTrader account selection was cancelled by a provider change.');
     const assets = (assetsResponse.asset || []).map((asset) => ({
       id: stringifyPayload(asset.assetId),
       name: asset.displayName || asset.name || stringifyPayload(asset.assetId),
@@ -445,7 +459,19 @@ class CTraderIntegration extends EventEmitter {
     return { symbolId: id, symbol: symbolName };
   }
 
-  async placeDemoMarketOrder({ symbolId, side, volume, stopLoss, takeProfit, confirmed }) {
+  async placeDemoMarketOrder(order) {
+    if (this.demoOrderInProgress) {
+      throw new Error('A cTrader demo order is already being processed. Check the account before retrying.');
+    }
+    this.demoOrderInProgress = true;
+    try {
+      return await this.executeDemoMarketOrder(order);
+    } finally {
+      this.demoOrderInProgress = false;
+    }
+  }
+
+  async executeDemoMarketOrder({ symbolId, side, volume, stopLoss, takeProfit, confirmed }) {
     const account = this.requireTradingAccount();
     if (account.environment !== 'demo') {
       throw new Error('Live order placement is locked until demo order protection is validated.');
@@ -489,7 +515,8 @@ class CTraderIntegration extends EventEmitter {
     if (execution.executionType === 'ORDER_REJECTED' || execution.executionType === 7) {
       throw new Error(`cTrader rejected the order${execution.errorCode ? `: ${execution.errorCode}` : '.'}`);
     }
-    if (execution.executionType !== 'ORDER_FILLED' && execution.executionType !== 3) {
+    const partialFill = execution.executionType === 'ORDER_PARTIAL_FILL' || execution.executionType === 3;
+    if (execution.executionType !== 'ORDER_FILLED' && execution.executionType !== 2 && !partialFill) {
       throw new Error(`cTrader has not confirmed a market fill (${execution.executionType || 'unknown status'}). Check the demo account before retrying.`);
     }
     const positionId = stringifyPayload(execution.position?.positionId);
@@ -497,6 +524,33 @@ class CTraderIntegration extends EventEmitter {
       throw new Error('cTrader accepted the order but returned no position ID. Check the demo account in cTrader before retrying.');
     }
 
+    let remainderStatus = 'not-applicable';
+    let remainderCancellationError = '';
+    if (partialFill) {
+      remainderStatus = 'unknown';
+      const orderId = stringifyPayload(execution.order?.orderId);
+      if (!orderId) {
+        remainderCancellationError = 'cTrader did not return an order ID for the unfilled remainder.';
+      } else {
+        try {
+          const cancellation = await account.session.request(PAYLOAD.cancelOrderRequest, {
+            ctidTraderAccountId: account.id,
+            orderId,
+          }, PAYLOAD.executionEvent);
+          if (cancellation.executionType === 'ORDER_CANCELLED' || cancellation.executionType === 5) {
+            remainderStatus = 'cancelled';
+          } else if (cancellation.executionType === 'ORDER_FILLED' || cancellation.executionType === 2) {
+            remainderStatus = 'filled';
+          } else {
+            remainderCancellationError = `cTrader did not confirm cancellation of the unfilled remainder (${cancellation.executionType || 'unknown status'}).`;
+          }
+        } catch (error) {
+          remainderCancellationError = error instanceof Error ? error.message : String(error);
+        }
+      }
+    }
+
+    let reconciledPosition;
     try {
       const protection = { ctidTraderAccountId: account.id, positionId, stopLoss };
       if (takeProfit !== undefined && takeProfit !== null) protection.takeProfit = takeProfit;
@@ -504,6 +558,10 @@ class CTraderIntegration extends EventEmitter {
       assertSuccessfulExecution(protectionResult, 'stop-loss protection');
       const reconciliation = await this.reconcileActiveAccount();
       const protectedPosition = reconciliation.positions.find(position => stringifyPayload(position.positionId) === positionId);
+      if (!protectedPosition) {
+        throw new Error('cTrader did not return the filled position during reconciliation.');
+      }
+      reconciledPosition = protectedPosition;
       const confirmedStopLoss = Number(protectedPosition?.stopLoss);
       const confirmedTakeProfit = Number(protectedPosition?.takeProfit);
       if (!Number.isFinite(confirmedStopLoss) || Math.abs(confirmedStopLoss - stopLoss) > 1e-8
@@ -511,17 +569,34 @@ class CTraderIntegration extends EventEmitter {
           && (!Number.isFinite(confirmedTakeProfit) || Math.abs(confirmedTakeProfit - takeProfit) > 1e-8))) {
         throw new Error('cTrader did not confirm the requested protective prices during reconciliation.');
       }
+      if (partialFill) {
+        const orderId = stringifyPayload(execution.order?.orderId);
+        if (orderId && reconciliation.orders.some(order => stringifyPayload(order.orderId) === orderId)) {
+          remainderStatus = 'open';
+          remainderCancellationError = [
+            remainderCancellationError,
+            'The unfilled remainder is still listed as an open order.',
+          ].filter(Boolean).join(' ');
+        }
+      }
     } catch (protectionError) {
       const protectionMessage = protectionError instanceof Error ? protectionError.message : String(protectionError);
+      if (partialFill && remainderStatus !== 'cancelled' && remainderStatus !== 'filled') {
+        throw new Error(`A partial order fill was detected, but stop-loss protection failed (${protectionMessage}) and cancellation of the unfilled remainder was not confirmed (${remainderCancellationError || remainderStatus}). Omega did not close the partial position because the remainder may still fill. Check the position and pending orders in cTrader immediately; do not retry the order.`);
+      }
       try {
-        const positionVolume = Number(execution.position?.tradeData?.volume);
+        const currentState = await account.session.request(PAYLOAD.reconcileRequest, {
+          ctidTraderAccountId: account.id,
+        }, PAYLOAD.reconcileResponse);
+        const currentPosition = (currentState.position || []).find(position => stringifyPayload(position.positionId) === positionId);
+        const positionVolume = Number(currentPosition?.tradeData?.volume ?? execution.position?.tradeData?.volume);
         if (!Number.isSafeInteger(positionVolume) || positionVolume <= 0) throw new Error('The filled position volume was unavailable.');
         const closeResult = await account.session.request(PAYLOAD.closePositionRequest, {
           ctidTraderAccountId: account.id,
           positionId,
           volume: String(positionVolume),
         }, PAYLOAD.executionEvent);
-        if (closeResult.executionType !== 'ORDER_FILLED' && closeResult.executionType !== 3) {
+        if (closeResult.executionType !== 'ORDER_FILLED' && closeResult.executionType !== 2 && closeResult.executionType !== 3) {
           throw new Error(`The close request was not confirmed as filled (${closeResult.executionType || 'unknown status'}).`);
         }
         const reconciliation = await account.session.request(PAYLOAD.reconcileRequest, {
@@ -531,12 +606,20 @@ class CTraderIntegration extends EventEmitter {
           throw new Error('The position is still present after the close request.');
         }
       } catch (closeError) {
-        throw new Error(`Order filled, but stop-loss protection failed (${protectionMessage}) and automatic close failed (${closeError instanceof Error ? closeError.message : String(closeError)}). Check the position in cTrader immediately.`);
+        throw new Error(`Order filled, but stop-loss protection failed (${protectionMessage}) and automatic close failed (${closeError instanceof Error ? closeError.message : String(closeError)}). Check the position and pending orders in cTrader immediately; do not retry the order.`);
       }
       throw new Error(`Order filled, but stop-loss protection failed. Omega closed the demo position. Protection error: ${protectionMessage}`);
     }
 
-    return { positionId, executionType: execution.executionType, protected: true };
+    return {
+      positionId,
+      executionType: execution.executionType,
+      protected: true,
+      partialFill,
+      filledVolume: stringifyPayload(reconciledPosition?.tradeData?.volume ?? execution.position?.tradeData?.volume) || undefined,
+      remainderStatus,
+      remainderCancellationError: remainderCancellationError || undefined,
+    };
   }
 
   async reconcileActiveAccount() {
@@ -586,6 +669,11 @@ class CTraderIntegration extends EventEmitter {
   }
 
   async disconnect() {
+    this.authorizationRevision += 1;
+    await this.disconnectInternal();
+  }
+
+  async disconnectInternal() {
     this.cancelAuthorization?.();
     this.cancelAuthorization = null;
     await this.disconnectSessions();

@@ -280,22 +280,31 @@ export function initializeCTraderFeed(getWorkspace: () => VelaWorkspace): void {
 
   const provider = new CTraderDataProvider(bridge);
   let connected = false;
+  let revision = 0;
 
-  const registerProvider = async (chart: VelaWorkspace['chart']) => {
+  const registerProvider = async (chart: VelaWorkspace['chart'], expectedRevision: number) => {
+    if (!connected || expectedRevision !== revision) return;
     await chart.data.registerProvider('ctrader', provider);
     await chart.data.ready();
+    if (!connected || expectedRevision !== revision) chart.data.unregisterProvider('ctrader');
   };
-  const registerWorkspace = async () => {
-    await Promise.all(getWorkspace().cells().map(cell => registerProvider(cell.chart)));
+  const registerWorkspace = async (expectedRevision: number) => {
+    await Promise.all(getWorkspace().cells().map(cell => registerProvider(cell.chart, expectedRevision)));
   };
   const setFeedStatus = (message: string, error = false) => {
     document.dispatchEvent(new CustomEvent('omega:ctrader-feed-status', { detail: { message, error } }));
+  };
+  const disable = () => {
+    connected = false;
+    revision += 1;
+    provider.disconnect();
+    for (const cell of getWorkspace().cells()) cell.chart.data.unregisterProvider('ctrader');
   };
 
   getWorkspace().on('cell:created', event => {
     if (!connected) return;
     const cell = getWorkspace().cell(event.id);
-    if (cell) void registerProvider(cell.chart).catch(error => {
+    if (cell) void registerProvider(cell.chart, revision).catch(error => {
       console.error('Could not register the cTrader provider on a new chart:', error);
       setFeedStatus(error instanceof Error ? error.message : String(error), true);
     });
@@ -305,18 +314,26 @@ export function initializeCTraderFeed(getWorkspace: () => VelaWorkspace): void {
     const symbols = (event as CustomEvent<CTraderSymbol[]>).detail;
     provider.setSymbols(symbols);
     connected = true;
-    void registerWorkspace().then(() => {
-      setFeedStatus('cTrader history and live quotes are ready. Search for CTRADER:SYMBOL or use the selected symbol on the chart.');
+    const expectedRevision = ++revision;
+    void registerWorkspace(expectedRevision).then(() => {
+      if (connected && expectedRevision === revision) {
+        setFeedStatus('cTrader history and live quotes are ready. Search for CTRADER:SYMBOL or use the selected symbol on the chart.');
+      }
     }).catch(error => {
+      if (!connected || expectedRevision !== revision) return;
       console.error('Could not register cTrader market data:', error);
       setFeedStatus(error instanceof Error ? error.message : String(error), true);
     });
   });
 
   document.addEventListener('omega:ctrader-disconnected', () => {
-    connected = false;
-    provider.disconnect();
-    for (const cell of getWorkspace().cells()) cell.chart.data.unregisterProvider('ctrader');
+    disable();
+  });
+  document.addEventListener('omega:trading-broker-connecting', () => {
+    disable();
+  });
+  document.addEventListener('omega:trading-broker-connected', event => {
+    if ((event as CustomEvent<string>).detail !== 'ctrader') disable();
   });
 
   document.addEventListener('omega:ctrader-chart-symbol', event => {
@@ -325,11 +342,15 @@ export function initializeCTraderFeed(getWorkspace: () => VelaWorkspace): void {
       setFeedStatus('Authorize a cTrader account and choose one of its symbols first.', true);
       return;
     }
-    void registerWorkspace().then(() => getWorkspace().chart.setMarket({ symbol: `ctrader:${symbol}` }))
-      .then(() => setFeedStatus(`Loaded cTrader:${symbol} on the active chart.`))
-      .catch(error => {
-        console.error(`Could not load cTrader:${symbol} on the chart:`, error);
-        setFeedStatus(error instanceof Error ? error.message : String(error), true);
-      });
+    const expectedRevision = revision;
+    void registerWorkspace(expectedRevision).then(async () => {
+      if (!connected || expectedRevision !== revision) return;
+      await getWorkspace().chart.setMarket({ symbol: `ctrader:${symbol}` });
+      if (connected && expectedRevision === revision) setFeedStatus(`Loaded cTrader:${symbol} on the active chart.`);
+    }).catch(error => {
+      if (!connected || expectedRevision !== revision) return;
+      console.error(`Could not load cTrader:${symbol} on the chart:`, error);
+      setFeedStatus(error instanceof Error ? error.message : String(error), true);
+    });
   });
 }

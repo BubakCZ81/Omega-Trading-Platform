@@ -254,6 +254,10 @@ export function parseMt5Ticks(value: unknown, previousPrice = 0): { ticks: Marke
   return { ticks, cursor };
 }
 
+export function isRecentMt5Tick(time: number, now = Date.now()): boolean {
+  return Number.isFinite(time) && time >= now - 10_000 && time <= now + 2_000;
+}
+
 export function parseMt5Book(value: unknown): MarketDepth | null {
   if (!Array.isArray(value)) return null;
   const bids: DepthLevel[] = [];
@@ -529,6 +533,7 @@ function createMarketFlowPanel(view: MarketFlowView, body: HTMLElement): SidePan
 
     let cursor = Date.now() - 2_000;
     let previousPrice = 0;
+    let lastLiveTickAt = 0;
     const seen = new Set<string>();
     const pollTicks = async () => {
       try {
@@ -536,7 +541,7 @@ function createMarketFlowPanel(view: MarketFlowView, body: HTMLElement): SidePan
         if (request !== generation || chart !== activeChart || !open) return;
         const parsed = parseMt5Ticks(batch, previousPrice);
         if (parsed.cursor) cursor = Math.max(cursor, parsed.cursor);
-        const fresh = parsed.ticks.filter(tick => {
+        const fresh = parsed.ticks.filter(tick => isRecentMt5Tick(tick.time)).filter(tick => {
           const id = tick.key ?? `${tick.time}:${tick.price}:${tick.quantity}:${tick.side}`;
           if (seen.has(id)) return false;
           seen.add(id);
@@ -548,9 +553,13 @@ function createMarketFlowPanel(view: MarketFlowView, body: HTMLElement): SidePan
           trades.unshift(...fresh.reverse());
           if (trades.length > 100) trades.length = 100;
           renderTrades(tableBody, trades);
+          lastLiveTickAt = Date.now();
+          status.dataset.state = 'live';
+          status.textContent = `Live MT5 ticks · ${ticker}`;
+        } else if (Date.now() - lastLiveTickAt > 10_000) {
+          status.dataset.state = 'connecting';
+          status.textContent = `Connected to MT5 · waiting for live ticks · ${ticker}`;
         }
-        status.dataset.state = 'live';
-        status.textContent = `Live MT5 ticks · ${ticker}`;
       } catch (error) {
         if (request !== generation || chart !== activeChart || !open) return;
         status.dataset.state = 'error';

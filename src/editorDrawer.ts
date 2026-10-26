@@ -42,7 +42,7 @@ function toggleEditor(forceState?: boolean): void {
 
 window.toggleEditor = toggleEditor;
 
-document.getElementById('editor-toggle-btn')?.addEventListener('click', () => {
+document.addEventListener('omega:bottom-panel:editor-toggle', () => {
   toggleEditor();
 });
 
