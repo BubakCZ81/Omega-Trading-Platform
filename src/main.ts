@@ -30,7 +30,7 @@ import { CHART_GROUP_COLORS, initializeChartGroups } from './chartGroups';
 import './favoriteDrawingTools';
 import { loadOptionalModule, type OptionalModule, type OptionalModuleId } from './featureModules';
 import { createReplayAwareEngine } from './replayStreamingEngine';
-import { getMarketFlowStyle, refreshMarketFlowStyles, setMarketFlowStyle } from './marketFlowPane';
+import { refreshMarketFlowStyles } from './marketFlowPane';
 import { attachFuturesMonthBoundaries } from './futuresMonthBoundaries';
 import { formatTradingSessionStatus, getOpenTradingSessions } from './tradingSessions';
 import { PersistentCandleProvider } from './persistentCandleCache';
@@ -44,6 +44,8 @@ import { LoadedBarsController } from './loadedBars';
 import { initializeTradingAccounts } from './tradingAccounts';
 import { initializeChartSettingsActions } from './chartSettingsActions';
 import { initializeChartContextActions } from './chartContextActions';
+import { registerChartRendererSettings } from './chartRendererSettings';
+import { initializeToolbarDropdowns } from './toolbarDropdowns';
 // createWindow will be loaded lazily inside openTauriStandaloneEditor
 
 const startupScreen = document.getElementById('omega-startup-screen');
@@ -98,186 +100,6 @@ const standaloneEditorModules = standalonePineEditor
   ? Promise.all([import('./pineEditorNext'), import('./pineReferencePanel')])
   : null;
 
-/* Removed Tauri bridge. Electron exposes the desktop APIs through preload.cjs.
-if ('__TAURI_INTERNALS__' in window) {
-  const { invoke } = await import('@tauri-apps/api/core');
-  const { emitTo, listen } = await import('@tauri-apps/api/event');
-  type AiBridgeApi = NonNullable<Window['velaAi']>;
-  window.velaAi = {
-    providers: () => invoke<Awaited<ReturnType<AiBridgeApi['providers']>>>('ai_providers'),
-    saveKey: (provider, apiKey) => invoke<Awaited<ReturnType<AiBridgeApi['saveKey']>>>('ai_save_key', { provider, apiKey }),
-    clearKey: provider => invoke<Awaited<ReturnType<AiBridgeApi['clearKey']>>>('ai_clear_key', { provider }),
-    testKey: (provider, apiKey) => invoke<Awaited<ReturnType<AiBridgeApi['testKey']>>>('ai_test_key', { provider, apiKey }),
-    complete: request => invoke<Awaited<ReturnType<AiBridgeApi['complete']>>>('ai_complete', { request }),
-  };
-  type Mt5BridgeApi = NonNullable<Window['velaMt5']>;
-  window.velaMt5 = {
-    connect: pythonExecutable => invoke<Awaited<ReturnType<Mt5BridgeApi['connect']>>>('mt5_connect', { pythonExecutable }),
-    symbols: () => invoke<Awaited<ReturnType<Mt5BridgeApi['symbols']>>>('mt5_symbols'),
-    bars: request => invoke<Awaited<ReturnType<Mt5BridgeApi['bars']>>>('mt5_bars', { request }),
-    quote: ticker => invoke<Awaited<ReturnType<Mt5BridgeApi['quote']>>>('mt5_quote', { ticker }),
-    ticks: request => invoke<Awaited<ReturnType<Mt5BridgeApi['ticks']>>>('mt5_ticks', { request }),
-    marketBook: ticker => invoke<Awaited<ReturnType<Mt5BridgeApi['marketBook']>>>('mt5_market_book', { ticker }),
-    info: ticker => invoke<Awaited<ReturnType<Mt5BridgeApi['info']>>>('mt5_info', { ticker }),
-    disconnect: () => invoke<Awaited<ReturnType<Mt5BridgeApi['disconnect']>>>('mt5_disconnect'),
-  };
-
-  type BrokerBridge = NonNullable<Window['velaBroker']>;
-  const cTraderQuotes = new Set<Parameters<BrokerBridge['onCTraderQuote']>[0]>();
-  void listen<Parameters<BrokerBridge['onCTraderQuote']>[0] extends (quote: infer Quote) => void ? Quote : never>(
-    'ctrader:quote',
-    event => {
-      for (const callback of cTraderQuotes) callback(event.payload);
-    },
-  ).catch(error => {
-    console.error('Could not initialize cTrader quote events:', error);
-    throw error;
-  });
-  window.velaBroker = {
-    cTraderDataFeedOnly: true,
-    listBrokers: async () => {
-      const brokers = await invoke<Awaited<ReturnType<BrokerBridge['listBrokers']>>>('broker_sdk_list');
-      return [...brokers, {
-        id: 'ctrader',
-        displayName: 'cTrader',
-        credentials: [
-          { key: 'clientId', label: 'cTrader Open API Client ID', secret: false },
-          { key: 'clientSecret', label: 'cTrader Open API Client Secret', secret: true },
-        ],
-        readOnlySetup: 'Enter credentials for your cTrader Open API app. The sign-in page opens in your browser and supports cTrader ID sign-in, including Google when enabled. Register the redirect URL http://127.0.0.1:17863/ctrader/callback. Credentials are encrypted for this Windows account.',
-      }];
-    },
-    connectReadOnly: (brokerId, credentials) => invoke<Awaited<ReturnType<BrokerBridge['connectReadOnly']>>>(
-      'broker_sdk_connect_read_only', { brokerId, credentials },
-    ),
-    fetchSnapshot: () => invoke<Awaited<ReturnType<BrokerBridge['fetchSnapshot']>>>('broker_sdk_fetch_snapshot'),
-    hasSavedCTraderCredentials: () => invoke('ctrader_has_saved_credentials'),
-    authorizeCTrader: credentials => invoke<Awaited<ReturnType<BrokerBridge['authorizeCTrader']>>>(
-      'ctrader_authorize',
-      { clientId: credentials.clientId, clientSecret: credentials.clientSecret },
-    ),
-    selectCTraderAccount: accountId => invoke<Awaited<ReturnType<BrokerBridge['selectCTraderAccount']>>>(
-      'ctrader_select_account',
-      { accountId },
-    ),
-    subscribeCTraderSymbol: async symbolId => {
-      await invoke<string>('ctrader_subscribe_symbol', { symbolId });
-      const symbols = await invoke<Awaited<ReturnType<CTraderFeedBridge['symbols']>>>('ctrader_symbols');
-      const symbol = symbols.find(item => item.id === symbolId);
-      return { symbolId, symbol: symbol?.name ?? symbolId };
-    },
-    placeDemoCTraderMarketOrder: async () => { throw new Error('cTrader order placement is disabled in the Tauri data-feed connection.'); },
-    reconcileCTraderAccount: async () => { throw new Error('cTrader trading reconciliation is disabled in the Tauri data-feed connection.'); },
-    onCTraderQuote: callback => {
-      cTraderQuotes.add(callback);
-      return () => cTraderQuotes.delete(callback);
-    },
-    disconnect: async () => {
-      await invoke('broker_sdk_disconnect');
-      return invoke<Awaited<ReturnType<BrokerBridge['disconnect']>>>('ctrader_disconnect');
-    },
-  };
-  type CTraderFeedBridge = NonNullable<Window['velaCTraderFeed']>;
-  window.velaCTraderFeed = {
-    symbols: () => invoke<Awaited<ReturnType<CTraderFeedBridge['symbols']>>>('ctrader_symbols'),
-    bars: request => invoke<Awaited<ReturnType<CTraderFeedBridge['bars']>>>('ctrader_bars', { request }),
-    subscribeSymbol: symbolId => invoke<Awaited<ReturnType<CTraderFeedBridge['subscribeSymbol']>>>(
-      'ctrader_subscribe_symbol',
-      { symbolId },
-    ),
-    unsubscribe: subscriptionId => invoke<Awaited<ReturnType<CTraderFeedBridge['unsubscribe']>>>(
-      'ctrader_unsubscribe',
-      { subscriptionId },
-    ),
-    onQuote: callback => {
-      const listener: Parameters<BrokerBridge['onCTraderQuote']>[0] = quote => callback(quote);
-      cTraderQuotes.add(listener);
-      return () => cTraderQuotes.delete(listener);
-    },
-  };
-
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-  const editorWindowLabel = 'omega-pine-editor-window';
-  const editorEvents = {
-    openScript: 'omega-pine-editor-open-script',
-    openDocked: 'omega-pine-editor-open-docked',
-    scriptUpdated: 'omega-pine-editor-script-updated',
-    scriptResult: 'omega-pine-editor-script-result',
-  } as const;
-  const onEditorEvent = <T>(eventName: string, target: string, callback: (payload: T) => void): (() => void) => {
-    let unlisten: (() => void) | undefined;
-    void listen<T>(eventName, event => callback(event.payload), { target })
-      .then(dispose => { unlisten = dispose; })
-      .catch(error => console.error(`Could not listen for ${eventName}:`, error));
-    return () => unlisten?.();
-  };
-  const sendEditorEvent = <T>(target: string, eventName: string, payload?: T): void => {
-    void emitTo(target, eventName, payload).catch(error => console.error(`Could not send ${eventName}:`, error));
-  };
-  const openEditorWindow = async (script?: { name: string; source: string }): Promise<boolean> => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('window', 'pine-editor');
-    if (script) url.searchParams.set('script', script.name);
-    let editorWindow = await WebviewWindow.getByLabel(editorWindowLabel);
-    if (editorWindow) {
-      await editorWindow.show();
-      await editorWindow.setFocus();
-      if (script) sendEditorEvent(editorWindowLabel, editorEvents.openScript, script);
-      return true;
-    }
-
-    editorWindow = new WebviewWindow(editorWindowLabel, {
-      url: url.toString(),
-      title: `Omega Pine Editor${script ? ` — ${script.name}` : ''}`,
-      width: 1280,
-      height: 820,
-      focus: true,
-      resizable: true,
-    });
-    await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => reject(new Error('Timed out while opening the Pine Editor window.')), 10_000);
-      void editorWindow!.once('tauri://created', () => {
-        window.clearTimeout(timeout);
-        resolve();
-      }).catch(error => {
-        window.clearTimeout(timeout);
-        reject(error);
-      });
-      void editorWindow!.once('tauri://error', error => {
-        window.clearTimeout(timeout);
-        reject(new Error(`Could not open the Pine Editor window: ${String(error)}`));
-      }).catch(error => {
-        window.clearTimeout(timeout);
-        reject(error);
-      });
-    });
-    if (script) sendEditorEvent(editorWindowLabel, editorEvents.openScript, script);
-    return true;
-  };
-
-  window.velaPineEditorWindow = {
-    open: () => openEditorWindow(),
-    openScript: (name, source) => {
-      const savedScripts = getSavedScripts();
-      savedScripts[name] = source;
-      saveScriptsToStorage(savedScripts);
-      return openEditorWindow({ name, source });
-    },
-    openDocked: () => sendEditorEvent('main', editorEvents.openDocked),
-    onOpenDocked: callback => onEditorEvent(editorEvents.openDocked, 'main', () => {
-      callback();
-      void WebviewWindow.getByLabel(editorWindowLabel)
-        .then(editorWindow => editorWindow?.close())
-        .catch(error => console.error('Could not close the Pine Editor window:', error));
-    }),
-    publishScriptUpdate: script => sendEditorEvent('main', editorEvents.scriptUpdated, script),
-    onScriptUpdated: callback => onEditorEvent(editorEvents.scriptUpdated, 'main', callback),
-    publishScriptResult: result => sendEditorEvent(editorWindowLabel, editorEvents.scriptResult, result),
-    onScriptResult: callback => onEditorEvent(editorEvents.scriptResult, editorWindowLabel, callback),
-    onOpenScript: callback => onEditorEvent(editorEvents.openScript, editorWindowLabel, callback),
-  };
-}
-*/
 
 const optionalModuleLoads = Promise.all([
   loadStartupModule('broker', () => import('./brokerPanel')),
@@ -566,10 +388,38 @@ function setBarThickness(value: number, notifyWorkspace = true) {
   }
 }
 
-// A renderer can be configured more than once while a workspace is restored or
-// re-mounted.  Settings sections are a replacement API, so registering them
-// repeatedly can leave the native dialog in an inconsistent state.
-const chartSettingsRegistered = new WeakSet<object>();
+const chartRendererSettingsOptions = {
+  getWorkspace: () => workspace,
+  chartTabsState,
+  groupByCellId,
+  isChartTabsLayout,
+  setChartTabsEnabled: (enabled: boolean) => setChartTabsEnabled(enabled),
+  setCellGroup: (cellId: string, group: string) => setCellGroup(cellId, group),
+  getTheme: () => currentTheme,
+  setTheme,
+  getBarThickness: () => barThickness,
+  setBarThickness: (value: number) => setBarThickness(value),
+  getLockPriceToBarRatio: () => lockPriceToBarRatio,
+  setLockPriceToBarRatio: (enabled: boolean) => {
+    lockPriceToBarRatio = enabled;
+    localStorage.setItem('vela_lock_price_to_bar_ratio', String(enabled));
+    for (const controller of priceBarRatioControllers) controller.setEnabled(enabled);
+    if (workspaceInitialized) workspace.context().stateChanged();
+  },
+  getShowBidAskLines: () => showBidAskLines,
+  setShowBidAskLines: (enabled: boolean) => {
+    showBidAskLines = enabled;
+    for (const controller of bidAskLinesControllers.values()) controller.setEnabled(enabled);
+    if (workspaceInitialized) workspace.context().stateChanged();
+  },
+  getBidAskLineStyle: () => bidAskLineStyle,
+  setBidAskLineStyle: (next: Partial<BidAskLineStyle>) => {
+    bidAskLineStyle = { ...bidAskLineStyle, ...next };
+    for (const controller of bidAskLinesControllers.values()) controller.setStyle(bidAskLineStyle);
+    if (workspaceInitialized) workspace.context().stateChanged();
+  },
+  setLoadedBars: (cellId: string, bars: number) => loadedBarsController.set(cellId, 0, bars),
+};
 
 function configureChartRenderer(chart: VelaWorkspace['chart'], cellId: string) {
   chart.renderer.set('zoomAnchor', 'cursor');
@@ -580,204 +430,7 @@ function configureChartRenderer(chart: VelaWorkspace['chart'], cellId: string) {
   bidAskLinesControllers.set(cellId, bidAskLines);
   futuresMonthBoundaryDisposers.get(cellId)?.();
   futuresMonthBoundaryDisposers.set(cellId, attachFuturesMonthBoundaries(chart));
-  registerChartSettings(chart);
-}
-
-function registerChartSettings(chart: VelaWorkspace['chart']) {
-  if (chartSettingsRegistered.has(chart)) return;
-  const settingsCellId = () => workspace.cells().find(cell => cell.chart === chart)?.id ?? workspace.active.id;
-  const setBidAskStyle = (next: Partial<BidAskLineStyle>) => {
-    bidAskLineStyle = { ...bidAskLineStyle, ...next };
-    for (const controller of bidAskLinesControllers.values()) controller.setStyle(bidAskLineStyle);
-    if (workspaceInitialized) workspace.context().stateChanged();
-  };
-  const bidAskColorOptions = BID_ASK_COLOR_OPTIONS.map(([color, label]) => [color, label] as const);
-  const marketFlowFontOptions = [10, 11, 12, 13, 14, 16, 18].map(size => [String(size), `${size}px`] as const);
-  const marketFlowSettings = (view: 'time-sales' | 'dom', title: string) => {
-    const colorRows = [
-      ['background', 'Panel background'],
-      ['text', 'Text'],
-      ['buy', 'Buy / bid'],
-      ['sell', 'Sell / ask'],
-      ['grid', 'Grid and separators'],
-    ] as const;
-    return {
-      title,
-      id: `omega-${view}-appearance`,
-      rows: [
-        {
-          kind: 'select' as const,
-          label: 'Font size',
-          options: marketFlowFontOptions,
-          get: () => String(getMarketFlowStyle(view).fontSize),
-          set: (value: string) => setMarketFlowStyle(view, 'fontSize', value),
-        },
-        ...colorRows.map(([key, label]) => ({
-          kind: 'color' as const,
-          label,
-          get: () => getMarketFlowStyle(view)[key],
-          set: (value: string) => setMarketFlowStyle(view, key, value),
-        })),
-      ],
-    };
-  };
-  const bidAskWidthOptions = BID_ASK_WIDTH_OPTIONS.map(width => [String(width), `${width}px`] as const);
-  const bidAskStyleOptions = BID_ASK_STYLE_OPTIONS;
-  chart.renderer.setSettingsSections([
-    {
-      title: 'Workspace',
-      id: 'omega-workspace',
-      rows: [
-        {
-          kind: 'select',
-          label: 'Layout',
-          options: [['1', '1 chart'], ['2h', '2 charts — side by side'], ['2v', '2 charts — stacked'], ['4', '4 charts']],
-          get: () => isChartTabsLayout(workspace.layout.id) ? '1' : workspace.layout.id,
-          set: (layout: string) => {
-            if (isChartTabsLayout(workspace.layout.id)) setChartTabsEnabled(false);
-            workspace.setLayout(layout);
-          },
-        },
-        {
-          kind: 'toggle',
-          label: 'Chart tabs',
-          get: () => chartTabsState.enabled,
-          set: (enabled: boolean) => setChartTabsEnabled(enabled),
-        },
-        {
-          kind: 'select',
-          label: 'Active chart group',
-          options: [['', 'None'], ['red', 'Red'], ['blue', 'Blue'], ['green', 'Green'], ['yellow', 'Yellow'], ['purple', 'Purple']],
-          get: () => groupByCellId[settingsCellId()] ?? '',
-          set: (group: string) => { void setCellGroup(settingsCellId(), group); },
-        },
-        {
-          kind: 'select',
-          label: 'Workspace file',
-          options: [['idle', 'Choose action…'], ['save', 'Save workspace…'], ['load', 'Load workspace…']],
-          get: () => 'idle',
-          set: (action: string) => {
-            if (action === 'save') document.getElementById('workspace-save-profile')?.click();
-            if (action === 'load') document.getElementById('workspace-load-profile')?.click();
-          },
-        },
-      ],
-    },
-    {
-      title: 'Appearance',
-      id: 'omega-appearance',
-      rows: [
-        {
-          kind: 'select',
-          label: 'Platform theme',
-          options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast — light blue'], ['high-contrast-dark', 'High contrast — dark blue']],
-          get: () => currentTheme,
-          set: (theme: string) => setTheme(isOmegaTheme(theme) ? theme : 'dark'),
-        },
-        {
-          kind: 'color',
-          label: 'Chart background',
-          get: () => (chart.renderer.getConfig() as { layout?: { background?: string } }).layout?.background ?? '#101d30',
-          set: (background: string) => chart.renderer.applyConfig({ layout: { background } }),
-        },
-      ],
-    },
-    marketFlowSettings('time-sales', 'Time & Sales'),
-    marketFlowSettings('dom', 'DOM'),
-    {
-      title: 'Market data',
-      id: 'market-data',
-      rows: [{
-        kind: 'select',
-        label: 'Candles to load',
-        options: [
-          ['500', '500'], ['1000', '1,000'], ['3000', '3,000'], ['5000', '5,000'],
-          ['10000', '10,000'], ['15000', '15,000'], ['20000', '20,000'], ['25000', '25,000'],
-          ['30000', '30,000'], ['40000', '40,000'], ['50000', '50,000'],
-        ],
-        get: () => String(chart.market.bars ?? 3000),
-        set: (value: string) => {
-          const bars = Number.parseInt(value, 10);
-          if (!Number.isSafeInteger(bars) || bars < 1 || bars > 50_000) return;
-          loadedBarsController.set(settingsCellId(), 0, bars);
-          void chart.setMarket({ bars });
-        },
-      }],
-    },
-    {
-      title: 'Bar thickness',
-      id: 'bar-thickness',
-      rows: [{
-        kind: 'select',
-        label: 'Candle body width',
-        options: ['15%', '25%', '35%', '45%', '55%', '65%', '75%', '85%', '95%', '100%'].map(value => [value, value] as const),
-        get: () => `${Math.round(barThickness * 100)}%`,
-        set: (value: string) => {
-          setBarThickness(Number.parseInt(value, 10) / 100);
-        },
-      }],
-    },
-    {
-      title: 'Scale',
-      id: 'price-bar-ratio',
-      rows: [{
-        kind: 'toggle',
-        label: 'Lock price to bar ratio',
-        get: () => lockPriceToBarRatio,
-        set: (enabled: boolean) => {
-          lockPriceToBarRatio = enabled;
-          localStorage.setItem('vela_lock_price_to_bar_ratio', String(enabled));
-          for (const controller of priceBarRatioControllers) controller.setEnabled(enabled);
-          if (workspaceInitialized) workspace.context().stateChanged();
-        },
-      }],
-    },
-    {
-      title: 'Price lines',
-      id: 'price-lines',
-      rows: [
-        {
-          kind: 'toggle',
-          label: 'Show bid and ask lines',
-          get: () => showBidAskLines,
-          set: (enabled: boolean) => {
-            showBidAskLines = enabled;
-            for (const controller of bidAskLinesControllers.values()) controller.setEnabled(enabled);
-            if (workspaceInitialized) workspace.context().stateChanged();
-          },
-        },
-        {
-          kind: 'select',
-          label: 'Bid line color',
-          options: bidAskColorOptions,
-          get: () => bidAskLineStyle.bidColor,
-          set: (bidColor: string) => setBidAskStyle({ bidColor }),
-        },
-        {
-          kind: 'select',
-          label: 'Ask line color',
-          options: bidAskColorOptions,
-          get: () => bidAskLineStyle.askColor,
-          set: (askColor: string) => setBidAskStyle({ askColor }),
-        },
-        {
-          kind: 'select',
-          label: 'Line width',
-          options: bidAskWidthOptions,
-          get: () => String(bidAskLineStyle.lineWidth),
-          set: (lineWidth: string) => setBidAskStyle({ lineWidth: Number(lineWidth) }),
-        },
-        {
-          kind: 'select',
-          label: 'Line style',
-          options: bidAskStyleOptions,
-          get: () => bidAskLineStyle.lineStyle,
-          set: (lineStyle: string) => setBidAskStyle({ lineStyle: lineStyle as BidAskLineStyle['lineStyle'] }),
-        },
-      ],
-    },
-  ]);
-  chartSettingsRegistered.add(chart);
+  registerChartRendererSettings(chart, chartRendererSettingsOptions);
 }
 
 const workspaceStorage = getWorkspaceStorage();
@@ -989,6 +642,7 @@ if (!pineEngine) {
 }
 // ---------------------------------------------------------------------------
 const { sync: syncChartControls } = initializeChartTimeframeControls(workspace);
+initializeToolbarDropdowns();
 
 const marketChangeListeners = new Map<string, () => void>();
 function watchCellMarketChanges(cellId: string) {

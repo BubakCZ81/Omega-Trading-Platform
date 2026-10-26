@@ -997,7 +997,7 @@ input, textarea, select, [contenteditable="true"],
       .ctrader-timeframe-list button.selected::after { content: '✓'; margin-left: auto; color: var(--omega-accent-hover); font-weight: 800; }
       .ctrader-timeframe-list button:disabled { color: var(--omega-muted); opacity: .6; cursor: not-allowed; }
       .ctrader-timeframe-list kbd { min-width: 25px; margin-right: 5px; color: var(--omega-muted); font: 10px/1 Consolas, monospace; }
-      #theme-menu .timeframe-menu-content { width: 128px; display: grid; grid-template-columns: 1fr; gap: var(--space-sm); }
+      #theme-menu .timeframe-menu-content { width: 190px; display: grid; grid-template-columns: 1fr; gap: var(--space-sm); }
       #theme-menu .timeframe-menu-content button { justify-content: flex-start; }
       #theme-menu .timeframe-menu-content button.selected { border-color: var(--omega-accent); background: color-mix(in srgb, var(--omega-accent) 18%, var(--omega-elevated)); }
       #replay-controls { display: flex; grid-column: 1 / -1; gap: 6px; justify-content: flex-end; }

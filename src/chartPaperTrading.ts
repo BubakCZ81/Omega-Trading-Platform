@@ -1,9 +1,5 @@
 import {
-  registerNativeIndicator,
-  registerRendererLayer,
   type IndicatorHandle,
-  type NativeIndicatorContext,
-  type RendererLayerArgs,
   type Vela,
 } from '@luxalgo/vela';
 import type { VelaWorkspace } from '@luxalgo/vela/workspace';
@@ -22,6 +18,24 @@ import {
 } from './paperTradeMath';
 import { calculatePaperAccount, type PaperLedgerTrade } from './paperTradingAnalytics';
 import { createSingleFlightGate } from './singleFlight';
+import {
+  cleanPaperTradeSymbol as cleanSymbol,
+  formatPaperTradeLots as formatLots,
+  formatPaperTradePrice as formatPrice,
+  getPaperTradeContractSize as getContractSize,
+  getPaperTradeMinTick as getMinTick,
+  getPaperTradeQuoteCurrency as getQuoteCurrency,
+} from './paperTradeInstrument';
+import {
+  QUICK_TRADE_LAYER_ID,
+  registerPaperTradeOverlay,
+  type OverlayAction,
+  type TradeLineRole,
+  type TradeOverlayCanvas,
+  type TradeOverlayAction,
+  type TradeOverlayHit,
+  type TradeOverlayLevel,
+} from './paperTradeOverlay';
 
 const STORAGE_KEY = 'omega-paper-trades-v1';
 const PENDING_STORAGE_KEY = 'omega-paper-pending-orders-v1';
@@ -33,7 +47,6 @@ const DEFAULT_PAPER_CAPITAL = 100_000;
 const POSITION_COLOR = '#2962ff';
 const TARGET_COLOR = '#089981';
 const STOP_COLOR = '#f23645';
-const QUICK_TRADE_LAYER_ID = 'omega-quick-trade-levels';
 
 // Get theme-aware colors for chart overlay
 function getTradeLineColor(role: TradeLineRole): string {
@@ -46,11 +59,6 @@ function getTradeLineColor(role: TradeLineRole): string {
   if (role === 'stopLoss') return isLight ? '#dc2626' : STOP_COLOR;
   return isLight ? '#059669' : TARGET_COLOR;
 }
-
-type TradeLineRole = 'entry' | 'stopLoss' | 'takeProfit';
-type TradeOverlayAction = 'close' | 'reverse';
-type PendingOverlayAction = 'cancel';
-type OverlayAction = TradeOverlayAction | PendingOverlayAction;
 
 interface TradeRectangleAppearance {
   entryColor: string | null;
@@ -77,18 +85,6 @@ const DEFAULT_TRADE_PREFERENCES: PaperTradePreferences = {
   maxOpenTrades: 0,
 };
 
-interface TradeOverlayLevel {
-  tradeId: string;
-  role: TradeLineRole;
-  price: number;
-  label: string;
-  color: string;
-  lineWidth: number;
-  readonly?: boolean;
-  pending?: boolean;
-  hoveredAction?: OverlayAction;
-}
-
 interface BrokerChartPosition {
   positionId: string;
   symbol: string;
@@ -97,21 +93,6 @@ interface BrokerChartPosition {
   entryPrice: number;
   stopLoss?: number;
   takeProfit?: number;
-}
-
-interface TradeOverlayHit {
-  tradeId: string;
-  role: TradeLineRole;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  top?: number;
-  action?: OverlayAction;
-}
-
-interface TradeOverlayCanvas extends HTMLCanvasElement {
-  omegaTradePriceAtY?: (y: number) => number;
 }
 
 export interface ClosedPaperTrade extends PaperLedgerTrade {
@@ -200,6 +181,8 @@ let refreshPendingProtectionPreview: (() => void) | null = null;
 let previousFocus: HTMLElement | null = null;
 let tradeClickAudioContext: AudioContext | null = null;
 let refreshOpenTradesList: (() => void) | null = null;
+
+registerPaperTradeOverlay(() => tradeRectangleAppearance.transparency);
 
 function readTradePreferences(): PaperTradePreferences {
   try {
@@ -335,10 +318,6 @@ function computeAtr14(bars: Array<{ time: number; high: number; low: number; clo
   return atr;
 }
 
-function cleanSymbol(symbol: string | undefined | null): string {
-  return (symbol ?? '').trim().toUpperCase();
-}
-
 function playTradeSound(kind: 'level' | 'protectionSaved' | 'tradeClosed' = 'level'): void {
   if (!tradePreferences.soundsEnabled || tradePreferences.soundVolume <= 0 || !window.AudioContext) return;
   const context = tradeClickAudioContext ?? (tradeClickAudioContext = new AudioContext());
@@ -369,202 +348,6 @@ function playTradeSound(kind: 'level' | 'protectionSaved' | 'tradeClosed' = 'lev
     play();
   }
 }
-
-function isTradeOverlayData(data: unknown): data is { levels: TradeOverlayLevel[] } {
-  return !!data && typeof data === 'object'
-    && Array.isArray((data as { levels?: unknown }).levels);
-}
-
-function drawRoundedLabelBackground(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-): void {
-  const corner = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + corner, y);
-  ctx.lineTo(x + width - corner, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + corner);
-  ctx.lineTo(x + width, y + height - corner);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - corner, y + height);
-  ctx.lineTo(x + corner, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - corner);
-  ctx.lineTo(x, y + corner);
-  ctx.quadraticCurveTo(x, y, x + corner, y);
-  ctx.closePath();
-}
-
-function drawTradeLevels(ctx: CanvasRenderingContext2D, args: RendererLayerArgs): void {
-  const { coords, bounds, scale } = args;
-  const labelHeight = 30;
-  const labelPadding = 12;
-  const labelGap = 12;
-  const controlSize = 18;
-  const controlGap = 5;
-  ctx.setTransform(coords.dpr, 0, 0, coords.dpr, 0, 0);
-  ctx.clearRect(0, 0, coords.width, coords.height);
-
-  const levels = isTradeOverlayData(args.data) ? args.data.levels : [];
-  const hits: TradeOverlayHit[] = [];
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(0, bounds.top, coords.width, bounds.height);
-  ctx.clip();
-  for (const level of levels) {
-    if (!Number.isFinite(level.price)) continue;
-    const y = coords.priceToY(level.price, scale, bounds);
-    if (!Number.isFinite(y) || y < bounds.top || y > bounds.top + bounds.height) continue;
-
-    ctx.strokeStyle = level.color;
-    ctx.globalAlpha = 0.9;
-    ctx.lineWidth = level.lineWidth;
-    // Entry, stop-loss and take-profit levels must remain equally visible.
-    ctx.setLineDash([]);
-    ctx.font = '700 13px sans-serif';
-    const controlCount = level.role === 'entry' && !level.readonly ? (level.pending ? 1 : 2) : 0;
-    const labelWidth = ctx.measureText(level.label).width + labelPadding * 2
-      + (controlCount ? controlSize * controlCount + controlGap * (controlCount + 1) : 0);
-    const labelX = coords.width - labelWidth - 6;
-    const lineEndX = Math.max(0, labelX - labelGap);
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(lineEndX, y);
-    ctx.stroke();
-
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = level.color;
-    drawRoundedLabelBackground(ctx, labelX, y - labelHeight / 2, labelWidth, labelHeight, 7);
-    ctx.globalAlpha = 1 - tradeRectangleAppearance.transparency / 100;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = 'rgba(255,255,255,.7)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = '#ffffff';
-    ctx.textBaseline = 'middle';
-    if (level.role === 'entry' && !level.readonly) {
-      const controls: Array<{ action: OverlayAction; x: number }> = level.pending
-        ? [{ action: 'cancel', x: labelX + labelWidth - controlSize - controlGap }]
-        : [
-          { action: 'reverse', x: labelX + controlGap },
-          { action: 'close', x: labelX + labelWidth - controlSize - controlGap },
-        ];
-      for (const control of controls) {
-        const controlY = y - controlSize / 2;
-        ctx.fillStyle = level.hoveredAction === control.action ? 'rgba(255,255,255,.34)' : 'rgba(255,255,255,.16)';
-        drawRoundedLabelBackground(ctx, control.x, controlY, controlSize, controlSize, 5);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,.8)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 1.8;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        if (control.action === 'close' || control.action === 'cancel') {
-          ctx.moveTo(control.x + 6, controlY + 6);
-          ctx.lineTo(control.x + controlSize - 6, controlY + controlSize - 6);
-          ctx.moveTo(control.x + controlSize - 6, controlY + 6);
-          ctx.lineTo(control.x + 6, controlY + controlSize - 6);
-        } else {
-          ctx.arc(control.x + controlSize / 2, controlY + controlSize / 2, 5, -Math.PI * 0.8, Math.PI * 0.7);
-          ctx.lineTo(control.x + 3, controlY + 7);
-          ctx.moveTo(control.x + 3, controlY + 7);
-          ctx.lineTo(control.x + 8, controlY + 7);
-          ctx.moveTo(control.x + 3, controlY + 7);
-          ctx.lineTo(control.x + 4, controlY + 12);
-        }
-        ctx.stroke();
-        hits.push({
-          tradeId: level.tradeId,
-          role: 'entry',
-          action: control.action,
-          x: control.x,
-          y,
-          width: controlSize,
-          height: controlSize,
-          top: controlY,
-        });
-      }
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(level.label, labelX + labelPadding + (level.pending ? 0 : controlSize + controlGap), y);
-    } else {
-      ctx.fillText(level.label, labelX + labelPadding, y);
-    }
-    if (!level.readonly) {
-      hits.push({ tradeId: level.tradeId, role: level.role, x: labelX, y, width: labelWidth, height: labelHeight });
-    }
-  }
-  ctx.restore();
-  const canvas = ctx.canvas as TradeOverlayCanvas;
-  canvas.omegaTradePriceAtY = y => coords.yToPrice(y, scale, bounds);
-  canvas.dataset.omegaTradeLevels = JSON.stringify(hits);
-}
-
-registerRendererLayer({
-  id: QUICK_TRADE_LAYER_ID,
-  placement: 'above-data',
-  create: () => {
-    let ctx: CanvasRenderingContext2D | null = null;
-    return {
-      mount: canvas => {
-        canvas.dataset.omegaTradeOverlay = 'true';
-        canvas.style.cursor = 'crosshair';
-        ctx = canvas.getContext('2d');
-      },
-      render: args => {
-        if (ctx) drawTradeLevels(ctx, args);
-      },
-    };
-  },
-});
-
-registerNativeIndicator({
-  type: QUICK_TRADE_LAYER_ID,
-  title: 'Quick Trade Lines',
-  shortTitle: 'Quick Trade',
-  paneHint: 'price',
-  overlay: true,
-  legend: false,
-  inputsSchema: () => [{ key: 'levels', title: 'Levels', type: 'text_area', defval: '[]' }],
-  defaultInputs: () => ({ levels: '[]' }),
-  create: () => {
-    let context: NativeIndicatorContext | undefined;
-    let levels: TradeOverlayLevel[] = [];
-    const publish = () => {
-      if (!context) return;
-      context.emit({ priceLines: [] });
-      context.pushData({ levels });
-    };
-    const readLevels = (inputs: Record<string, string | number | boolean>) => {
-      const value = inputs.levels;
-      levels = typeof value === 'string' ? JSON.parse(value) as TradeOverlayLevel[] : [];
-    };
-    return {
-      start: (ctx, inputs) => {
-        context = ctx;
-        readLevels(inputs);
-        publish();
-      },
-      onBars: () => undefined,
-      onViewport: () => undefined,
-      setInputs: inputs => {
-        readLevels(inputs);
-        publish();
-      },
-      suspend: () => undefined,
-      resume: publish,
-      stop: () => {
-        publish();
-        context = undefined;
-      },
-    };
-  },
-});
 
 const lotsInput = document.getElementById('paper-trade-lots') as HTMLInputElement;
 const buyButton = document.getElementById('paper-trade-buy') as HTMLButtonElement;
@@ -1085,65 +868,6 @@ function initializeTradingPane(workspace: VelaWorkspace): void {
   document.addEventListener('omega:spread-updated', updateTradingPaneMarketData as EventListener);
   setSide('buy');
   syncProtectionMode();
-}
-
-function positiveNumber(value: unknown): number | null {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : null;
-}
-
-function getMetadataValue(info: Record<string, unknown> | undefined, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = positiveNumber(info?.[key]);
-    if (value !== null) return value;
-  }
-  return null;
-}
-
-function getQuoteCurrency(symbol: string, info: Record<string, unknown> | undefined): string {
-  const metadataCurrency = [
-    info?.quoteCurrency,
-    info?.quote_currency,
-    info?.quoteCurrencyCode,
-    info?.currency_code,
-  ].find((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  if (metadataCurrency) return metadataCurrency.trim().toUpperCase();
-
-  const ticker = symbol.split(':').at(-1)?.toUpperCase().replace(/[^A-Z0-9]/g, '') ?? '';
-  for (const suffix of ['USDT', 'USDC', 'BUSD']) {
-    if (ticker.endsWith(suffix)) return suffix;
-  }
-  return ticker.length >= 6 ? ticker.slice(-3) : 'USD';
-}
-
-function getContractSize(
-  ticker: string,
-  info: Record<string, unknown> | undefined,
-): number {
-  const metadataSize = getMetadataValue(info, ['contractSize', 'contract_size', 'lotSize', 'lot_size']);
-  if (metadataSize !== null) return metadataSize;
-  return inferPipSize(ticker) === null ? 1 : 100_000;
-}
-
-function getMinTick(ticker: string, info: Record<string, unknown> | undefined): number {
-  return getMetadataValue(info, ['minTick', 'mintick', 'pipSize', 'pip_size'])
-    ?? inferPipSize(ticker)
-    ?? 0.01;
-}
-
-function decimalPlaces(value: number): number {
-  const [coefficient, exponentText] = value.toString().toLowerCase().split('e');
-  const exponent = Number(exponentText ?? 0);
-  const decimals = coefficient.includes('.') ? coefficient.length - coefficient.indexOf('.') - 1 : 0;
-  return Math.max(0, Math.min(10, decimals - exponent));
-}
-
-function formatPrice(price: number, minTick: number): string {
-  return price.toFixed(Math.max(2, decimalPlaces(minTick)));
-}
-
-function formatLots(lots: number): string {
-  return lots.toFixed(2);
 }
 
 function readPendingOrders(): PendingPaperOrder[] {
