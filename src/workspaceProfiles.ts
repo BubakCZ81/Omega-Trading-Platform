@@ -27,16 +27,29 @@ export function initializeWorkspaceProfiles(
   onApplyState: (state: unknown) => void,
 ): void {
   const profileNameInput = document.getElementById('workspace-profile-name') as HTMLInputElement | null;
-  const saveBtn = document.getElementById('workspace-save-profile');
-  const loadBtn = document.getElementById('workspace-load-profile');
+  const saveBtn = document.getElementById('workspace-save-profile') as HTMLButtonElement | null;
+  const loadBtn = document.getElementById('workspace-load-profile') as HTMLButtonElement | null;
 
-  saveBtn?.addEventListener('click', async () => {
+  async function run(button: HTMLButtonElement, action: () => Promise<void>): Promise<void> {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await action();
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  saveBtn?.addEventListener('click', () => { void run(saveBtn, async () => {
     const name = profileNameInput?.value.trim() ?? '';
     const state = JSON.stringify(workspace.getState());
     try {
       if (window.velaWorkspaceFiles) {
         const result = await window.velaWorkspaceFiles.saveProfile(name, state);
-        if (!result.canceled) workspace.toast(`Workspace saved${result.path ? `: ${result.path}` : '.'}`, 'success');
+        workspace.toast(
+          result.canceled ? 'Workspace save canceled.' : `Workspace saved${result.path ? `: ${result.path}` : '.'}`,
+          result.canceled ? 'info' : 'success',
+        );
         return;
       }
       if (!name) {
@@ -48,13 +61,17 @@ export function initializeWorkspaceProfiles(
     } catch (error) {
       workspace.toast(error instanceof Error ? error.message : String(error), 'error');
     }
-  });
+  }); });
 
-  loadBtn?.addEventListener('click', async () => {
+  loadBtn?.addEventListener('click', () => { void run(loadBtn, async () => {
     try {
       if (window.velaWorkspaceFiles) {
         const result = await window.velaWorkspaceFiles.loadProfile();
-        if (!result.canceled && result.state) onApplyState(ensureWorkspaceScriptLedger(JSON.parse(result.state)));
+        if (result.canceled) workspace.toast('Workspace load canceled.', 'info');
+        else if (result.state) {
+          onApplyState(ensureWorkspaceScriptLedger(JSON.parse(result.state)));
+          workspace.toast(`Workspace loaded${result.path ? `: ${result.path}` : '.'}`, 'success');
+        }
         return;
       }
       const name = profileNameInput?.value.trim() ?? '';
@@ -67,5 +84,5 @@ export function initializeWorkspaceProfiles(
     } catch (error) {
       workspace.toast(error instanceof Error ? error.message : String(error), 'error');
     }
-  });
+  }); });
 }

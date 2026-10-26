@@ -15,6 +15,12 @@ export interface RenkoBrick {
   close: number;
 }
 
+export interface PositionedRenkoBrick {
+  brick: RenkoBrick;
+  logical: number;
+  width: number;
+}
+
 const MAX_BRICKS_PER_BAR = 500;
 const FX_CURRENCIES = new Set([
   'AUD', 'CAD', 'CHF', 'EUR', 'GBP', 'JPY', 'NZD', 'USD',
@@ -172,41 +178,51 @@ function clearLayer(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, dp
 function renderRenko(args: RendererLayerArgs, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
   const bricks = isRenkoPayload(args.data) ? args.data : [];
   if (bricks.length === 0) return;
-  const byTime = new Map<number, RenkoBrick[]>();
   const logicalByTime = new Map(args.bars.map((bar, index) => [bar.time, index]));
-  for (const brick of bricks) {
-    const group = byTime.get(brick.time) ?? [];
-    group.push(brick);
-    byTime.set(brick.time, group);
-  }
-
   const pitch = Math.max(1, args.coords.pxPerBar());
-  for (const [time, group] of byTime) {
-    const logical = logicalByTime.get(time) ?? args.coords.timeToLogical(time);
-    const slot = pitch / group.length;
-    const width = Math.max(1, Math.min(pitch * 0.82, slot * 0.82));
-    group.forEach((brick, index) => {
-      const x = args.coords.logicalToX(logical + (index - (group.length - 1) / 2) / group.length);
-      const openY = args.coords.priceToY(brick.open, args.scale, args.bounds);
-      const closeY = args.coords.priceToY(brick.close, args.scale, args.bounds);
-      const highY = args.coords.priceToY(brick.high, args.scale, args.bounds);
-      const lowY = args.coords.priceToY(brick.low, args.scale, args.bounds);
-      const rising = brick.close >= brick.open;
-      const color = rising ? args.theme.upColor : args.theme.downColor;
+  const range = args.coords.visibleLogicalRange();
+  const positioned = layoutRenkoBricks(bricks.map(brick => ({
+    brick,
+    logical: logicalByTime.get(brick.time) ?? args.coords.timeToLogical(brick.time),
+  })), range, pitch);
+  for (const { brick, logical, width } of positioned) {
+    const x = args.coords.logicalToX(logical);
+    const openY = args.coords.priceToY(brick.open, args.scale, args.bounds);
+    const closeY = args.coords.priceToY(brick.close, args.scale, args.bounds);
+    const rising = brick.close >= brick.open;
+    const color = rising ? args.theme.upColor : args.theme.downColor;
 
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-      ctx.lineWidth = Math.max(1, Math.min(2, width / 5));
-      ctx.beginPath();
-      ctx.moveTo(x, highY);
-      ctx.lineTo(x, lowY);
-      ctx.stroke();
-      const top = Math.min(openY, closeY);
-      const height = Math.max(1, Math.abs(closeY - openY));
-      ctx.fillRect(x - width / 2, top, width, height);
-      ctx.strokeRect(x - width / 2, top, width, height);
-    });
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1;
+    const top = Math.min(openY, closeY);
+    const height = Math.max(1, Math.abs(closeY - openY));
+    ctx.fillRect(x - width / 2, top, width, height);
+    ctx.strokeRect(x - width / 2, top, width, height);
   }
+}
+
+export function layoutRenkoBricks(
+  entries: readonly { brick: RenkoBrick; logical: number }[],
+  visibleRange: { from: number; to: number },
+  pitch: number,
+): PositionedRenkoBrick[] {
+  const span = visibleRange.to - visibleRange.from;
+  if (!(span > 0) || !(pitch > 0) || !Number.isFinite(pitch)) return [];
+  const visible = entries.filter(entry =>
+    Number.isFinite(entry.logical)
+    && entry.logical >= visibleRange.from
+    && entry.logical <= visibleRange.to,
+  );
+  if (visible.length === 0) return [];
+
+  const spacing = span / visible.length;
+  const width = Math.max(1, Math.min(pitch * 0.82, pitch * spacing * 0.82));
+  return visible.map((entry, index) => ({
+    brick: entry.brick,
+    logical: visibleRange.from + (index + 0.5) * spacing,
+    width,
+  }));
 }
 
 function isRenkoPayload(value: unknown): value is RenkoBrick[] {

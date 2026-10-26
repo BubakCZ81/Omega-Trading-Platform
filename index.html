@@ -129,6 +129,7 @@
                 </div>
               </div>
             </details>
+            <button id="visual-backtest-toggle" class="btn" type="button" title="Open Visual Backtest" aria-label="Open Visual Backtest">Visual Backtest</button>
           </div>
           <div class="dock-pill">
             <label for="chart-layout-select">Layout:</label>
@@ -158,16 +159,11 @@
               <div class="timeframe-menu-content" role="menu" aria-label="Choose colour theme">
                 <button type="button" data-theme-choice="light" role="menuitemradio">Light</button>
                 <button type="button" data-theme-choice="dark" role="menuitemradio">Dark</button>
-                <button type="button" data-theme-choice="high-contrast" role="menuitemradio">High contrast (blue)</button>
+                <button type="button" data-theme-choice="high-contrast" role="menuitemradio">High contrast — light blue</button>
+                <button type="button" data-theme-choice="high-contrast-dark" role="menuitemradio">High contrast — dark blue</button>
               </div>
             </details>
             <button id="chart-tabs-toggle" class="btn" type="button" aria-pressed="false" title="Show or hide compact chart tabs">Tabs</button>
-            <button id="visual-backtest-toggle" class="btn" type="button" title="Open Visual Backtest" aria-label="Open Visual Backtest">Visual Backtest</button>
-            <span id="trading-account-status" class="trading-account-status" title="Embedded trading account">
-              <strong id="trading-account-mode">DEMO</strong>
-              <span id="trading-account-detail">Local account</span>
-            </span>
-            <span id="connection-latency" class="connection-latency" title="Round-trip response time to the active broker or trading server" aria-live="polite">Server: — ms</span>
             <div class="platform-zoom-controls" role="group" aria-label="Platform size">
               <span class="platform-zoom-title">Size</span>
               <button id="platform-zoom-out" class="btn platform-zoom-button" type="button" title="Decrease platform size" aria-label="Decrease platform size">−</button>
@@ -176,6 +172,13 @@
             </div>
             <button id="check-updates" class="btn" type="button">Check for updates</button>
           </div>
+          </div>
+          <div id="trading-account-status" class="trading-account-status" title="Selected trading account">
+            <span class="trading-account-label">Trading account</span>
+            <select id="trading-account-select" aria-label="Select trading account">
+              <option value="local-demo">DEMO · Local account</option>
+            </select>
+            <span class="trading-account-summary"><strong id="trading-account-mode">DEMO</strong><span id="trading-account-detail">Local account</span></span>
           </div>
         </div>
 
@@ -199,32 +202,6 @@
           <button id="paper-trade-settings-btn" class="btn" type="button" title="SL / TP Settings (Pips / ATR 14)" aria-label="Protection Settings">⚙</button>
           <span id="paper-trade-status" role="status" aria-live="polite"></span>
         </div>
-
-        <aside id="omega-trading-pane" aria-label="Paper trading panel" aria-hidden="true">
-          <header class="omega-tp-header">
-            <div class="omega-tp-title">New order <span id="omega-tp-symbol" class="omega-tp-symbol-badge">—</span></div>
-            <button id="trading-pane-close" class="omega-tp-close-btn" type="button" aria-label="Close trading panel">×</button>
-          </header>
-          <div class="omega-tp-body">
-            <div class="omega-tp-direction-grid" role="group" aria-label="Trade direction">
-              <button id="omega-tp-sell" class="omega-tp-dir-btn sell-btn" type="button" aria-pressed="false"><span class="omega-tp-dir-name">SELL</span><span id="omega-tp-sell-price" class="omega-tp-dir-price">—</span></button>
-              <button id="omega-tp-buy" class="omega-tp-dir-btn buy-btn active" type="button" aria-pressed="true"><span class="omega-tp-dir-name">BUY</span><span id="omega-tp-buy-price" class="omega-tp-dir-price">—</span></button>
-            </div>
-            <div class="omega-tp-field-group">
-              <div class="omega-tp-field-header"><span>Volume</span><span>Lots</span></div>
-              <div class="omega-tp-lots-control"><button class="omega-tp-step-btn" type="button" data-lot-step="-0.01" aria-label="Decrease lots">−</button><input id="omega-tp-lots" class="omega-tp-lots-input" type="number" min="0.01" step="0.01" value="0.01" inputmode="decimal" aria-label="Lot size"><button class="omega-tp-step-btn" type="button" data-lot-step="0.01" aria-label="Increase lots">+</button></div>
-              <div class="omega-tp-quick-lots"><button class="omega-tp-quick-lot-btn" type="button" data-lots="0.01">0.01</button><button class="omega-tp-quick-lot-btn" type="button" data-lots="0.10">0.10</button><button class="omega-tp-quick-lot-btn" type="button" data-lots="1.00">1.00</button><button class="omega-tp-quick-lot-btn" type="button" data-lots="5.00">5.00</button></div>
-            </div>
-            <section class="omega-tp-protection-card" aria-label="Stop loss and take profit">
-              <div class="omega-tp-prot-top"><span class="omega-tp-prot-toggle">Protection</span><select id="omega-tp-protection-mode" class="omega-tp-prot-mode" aria-label="Stop loss and take profit mode"><option value="pips">Pips</option><option value="atr">ATR (14)</option></select></div>
-              <div id="omega-tp-atr-readout" class="omega-tp-protection-note" hidden></div>
-              <div class="omega-tp-prot-row"><div class="omega-tp-prot-top"><span class="omega-tp-prot-toggle">Stop Loss</span><span id="omega-tp-sl-unit">Pips</span></div><div class="omega-tp-prot-input-wrap"><input id="omega-tp-sl" class="omega-tp-prot-input" type="number" min="0.1" step="0.1" value="20"></div><div class="omega-tp-prot-estimate"><span>Estimated loss</span><strong id="omega-tp-sl-estimate">—</strong></div></div>
-              <div class="omega-tp-prot-row"><div class="omega-tp-prot-top"><span class="omega-tp-prot-toggle">Take Profit</span><span id="omega-tp-tp-unit">Pips</span></div><div class="omega-tp-prot-input-wrap"><input id="omega-tp-tp" class="omega-tp-prot-input" type="number" min="0.1" step="0.1" value="40"></div><div class="omega-tp-prot-estimate"><span>Estimated profit</span><strong id="omega-tp-tp-estimate">—</strong></div></div>
-            </section>
-            <div class="omega-tp-market-info"><span class="omega-tp-spread-label">Current spread</span><strong id="omega-tp-spread" class="omega-tp-spread-value">—</strong></div>
-          </div>
-          <footer class="omega-tp-footer"><button id="omega-tp-trade" class="omega-tp-trade-btn buy" type="button">Place BUY order</button></footer>
-        </aside>
 
         <div id="paper-trade-settings-modal" role="dialog" aria-modal="true" aria-labelledby="paper-trade-settings-title" aria-hidden="true" hidden>
           <section id="paper-trade-settings-dialog">
@@ -420,7 +397,6 @@
             <button id="btn-export-script" class="btn" type="button" title="Save the current Pine script as a .pine file">Export</button>
             <button id="btn-delete" class="btn">Delete</button>
             <button id="btn-update-chart" class="btn" type="button" title="Compile and update the existing indicator with this script name">Update</button>
-
           </div>
           <div class="toolbar-group">
             <button id="btn-add-to-chart" class="btn" type="button" title="Add the last saved version of this Pine script to the active chart">
@@ -455,6 +431,7 @@
                       <div class="pine-ai-row">
                         <label class="pine-ai-field" for="pine-ai-provider">Provider
                           <select id="pine-ai-provider">
+                            <option value="local">Local OpenAI-compatible API</option>
                             <option value="gemini">Google Gemini</option>
                             <option value="groq">Groq</option>
                             <option value="openrouter">OpenRouter</option>
@@ -469,14 +446,34 @@
                           <select id="pine-ai-model" aria-label="AI model"></select>
                         </label>
                       </div>
-                      <label class="pine-ai-field" for="pine-ai-key">API key
-                        <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
-                      </label>
-                      <div class="pine-ai-row">
-                        <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
-                        <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                      <div id="pine-ai-cloud-settings">
+                        <label class="pine-ai-field" for="pine-ai-key">API key
+                          <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
+                          <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                        </div>
+                        <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
                       </div>
-                      <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
+                      <div id="pine-ai-local-settings" hidden>
+                        <label class="pine-ai-field" for="pine-ai-local-url">Local API base URL
+                          <input id="pine-ai-local-url" type="url" spellcheck="false" maxlength="500" placeholder="http://127.0.0.1:1234/v1">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-key">Optional local API key
+                          <input id="pine-ai-local-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Optional; encrypted if saved">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-model">Model ID
+                          <input id="pine-ai-local-model" type="text" list="pine-ai-local-models" spellcheck="false" maxlength="120" placeholder="Load models or enter a model ID">
+                          <datalist id="pine-ai-local-models"></datalist>
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-test-local" class="btn" type="button">Test endpoint &amp; load models</button>
+                          <button id="pine-ai-save-local" class="btn" type="button">Save local settings</button>
+                        </div>
+                        <button id="pine-ai-clear-local-key" class="btn" type="button">Remove saved local API key</button>
+                        <small>Localhost only. Prompts go directly to your local server; LuxAlgo research is separate and optional.</small>
+                      </div>
                     </div>
                   </details>
                   <button id="pine-ai-close" class="btn" type="button" aria-label="Close AI assistant">Close</button>
@@ -485,6 +482,10 @@
               <div id="pine-ai-history" data-panel-id="pine-ai-history" aria-label="Saved conversations" hidden></div>
               <div id="pine-ai-chat" role="log" aria-live="polite" aria-label="Conversation messages"></div>
               <p id="pine-ai-status" role="status" aria-live="polite"></p>
+              <label id="pine-ai-luxalgo-option" title="Search the public, read-only LuxAlgo Library over MCP and include the results with your prompt">
+                <input id="pine-ai-luxalgo-enabled" type="checkbox">
+                Include LuxAlgo Library research (MCP)
+              </label>
               <div id="pine-ai-composer">
                 <textarea id="pine-ai-prompt" maxlength="4000" aria-label="Message" placeholder="Ask about the current Pine script…"></textarea>
                 <button id="pine-ai-ask" class="btn btn-primary" type="button">Send</button>
@@ -599,10 +600,11 @@
             </section>
             <div id="broker-actions">
               <button id="broker-connect" class="btn btn-primary" type="button">Connect Read Only</button>
+              <button id="broker-save-credentials" class="btn" type="button" hidden>Save credentials</button>
               <button id="broker-refresh" class="btn" type="button" hidden>Refresh</button>
               <button id="broker-disconnect" class="btn" type="button" hidden>Disconnect</button>
             </div>
-            <p id="broker-status" role="status" aria-live="polite">Broker credentials are never saved by this panel.</p>
+            <p id="broker-status" role="status" aria-live="polite">Broker credentials are session-only unless you explicitly save supported credentials.</p>
             <div id="broker-accounts" aria-live="polite"></div>
             <div id="ctrader-quotes" aria-live="polite"></div>
           </div>
@@ -640,31 +642,6 @@
         </section>
       </div>
 
-      <div id="alpaca-feed-modal" data-panel-id="alpaca-feed" aria-hidden="true">
-        <section id="alpaca-feed-dialog" role="dialog" aria-modal="true" aria-labelledby="alpaca-feed-title">
-          <header id="alpaca-feed-header">
-            <strong id="alpaca-feed-title">Alpaca Stocks Market Data — Read Only</strong>
-            <button id="alpaca-feed-close" class="btn" type="button" aria-label="Close Alpaca feed panel">Close</button>
-          </header>
-          <div id="alpaca-feed-body">
-            <p>Connect an Alpaca market-data account to load historical and live US stock bars. This module is data-only and cannot submit or manage trades.</p>
-            <p class="alpaca-feed-setup">The free Basic plan provides IEX-only stock data (not the consolidated US market feed), up to 30 live symbols, and limited recent historical data. Alpaca's paid plans and account permissions may differ.</p>
-            <label class="broker-field" for="alpaca-key-id">Alpaca API Key ID
-              <input id="alpaca-key-id" type="text" autocomplete="off" spellcheck="false">
-            </label>
-            <label class="broker-field" for="alpaca-secret-key">Alpaca Secret Key
-              <input id="alpaca-secret-key" type="password" autocomplete="new-password" spellcheck="false">
-            </label>
-            <p class="alpaca-feed-setup">Keys are stored only after connection succeeds and only when operating-system encryption is available. Leave both fields blank to reconnect with saved keys. Supported chart intervals: 1, 5, 15, 30, 60 minutes and daily.</p>
-            <div id="alpaca-feed-actions">
-              <button id="alpaca-feed-connect" class="btn btn-primary" type="button">Connect to Alpaca</button>
-              <button id="alpaca-feed-disconnect" class="btn" type="button" hidden>Disconnect</button>
-            </div>
-            <p id="alpaca-feed-status" role="status" aria-live="polite">Not connected. No API credentials are used until you connect.</p>
-          </div>
-        </section>
-      </div>
-
       <div id="local-feeds-modal" aria-hidden="true" hidden>
         <section id="local-feeds-dialog" role="dialog" aria-modal="true" aria-labelledby="local-feeds-title">
           <header id="local-feeds-header">
@@ -673,7 +650,6 @@
           </header>
           <div id="local-feeds-body">
             <button class="local-feed-option" type="button" data-local-feed="mt5"><strong>MetaTrader 5</strong><span>Read-only prices from a locally running MT5 terminal.</span></button>
-            <button class="local-feed-option" type="button" data-local-feed="alpaca"><strong>Alpaca</strong><span>Read-only US stocks market data using your Alpaca credentials.</span></button>
           </div>
         </section>
       </div>
@@ -681,21 +657,26 @@
       <!-- 3. Permanent Bottom Dock Bar -->
       <div id="bottom-bar">
         <div class="bottom-bar-left">
-          <button id="editor-toggle-btn" class="bottom-tab-btn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="16 18 22 12 16 6"></polyline>
-              <polyline points="8 6 2 12 8 18"></polyline>
-            </svg>
-            <span>Pine Editor</span>
-          </button>
-          <button id="broker-toggle" class="bottom-tab-btn" type="button">Broker</button>
-          <button id="local-feeds-toggle" class="bottom-tab-btn" type="button">Local Feeds</button>
-          <button id="mt5-feed-toggle" type="button" hidden></button>
-          <button id="alpaca-feed-toggle" type="button" hidden></button>
-          <button id="backtest-toggle" class="bottom-tab-btn" type="button">Backtest</button>
-          <button id="open-trades-toggle" class="bottom-tab-btn" type="button">Trades</button>
-          <button id="trade-history-toggle" class="bottom-tab-btn" type="button">Trade History</button>
-          <button id="activity-console-toggle" class="bottom-tab-btn" type="button">Console</button>
+          <div id="trading-session-status" class="trading-session-status" role="status" aria-live="polite" title="Typical weekday market hours in each session's local timezone; not broker connection status.">
+            <span class="trading-session-indicator" aria-hidden="true"></span>
+            <span id="trading-session-label">Checking trading sessions…</span>
+          </div>
+          <div class="bottom-bar-tabs">
+            <button id="editor-toggle-btn" class="bottom-tab-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="16 18 22 12 16 6"></polyline>
+                <polyline points="8 6 2 12 8 18"></polyline>
+              </svg>
+              <span>Pine Editor</span>
+            </button>
+            <button id="broker-toggle" class="bottom-tab-btn" type="button">Broker</button>
+            <button id="local-feeds-toggle" class="bottom-tab-btn" type="button">Local Feeds</button>
+            <button id="mt5-feed-toggle" type="button" hidden></button>
+            <button id="open-trades-toggle" class="bottom-tab-btn" type="button">Trades</button>
+            <button id="trade-history-toggle" class="bottom-tab-btn" type="button">Trade History</button>
+            <button id="activity-console-toggle" class="bottom-tab-btn" type="button">Console</button>
+            <button id="diagnostics-console-toggle" class="bottom-tab-btn" type="button" title="Open local diagnostic console" aria-label="Open diagnostic console">Debug Console</button>
+          </div>
         </div>
         <div class="bottom-bar-right" style="display:flex; align-items:center; gap:12px; font-size:11px; color:var(--omega-muted);">
           <span id="terminal-connection-status" style="display:inline-flex; align-items:center; gap:5px; color:#10b981; font-weight:600;">
@@ -703,6 +684,8 @@
             Live
           </span>
           <span id="bottom-clock" style="font-family:Consolas, monospace; letter-spacing:0.5px;"></span>
+          <span id="connection-latency" class="connection-latency" title="Round-trip response time to the active broker or trading server" aria-live="polite">Server: — ms</span>
+          <a id="vela-attribution-link" href="https://velacharts.dev/" target="_blank" rel="noopener noreferrer" title="Charting by Vela™">Charting by Vela™</a>
           <span id="bottom-loaded-bars" title="Chart history is loading.">Bars: loading…</span>
           <div id="omega-top-right-pl" class="omega-top-right-pl" aria-label="Total paper trading profit and loss" title="Profit &amp; Loss: sum of all trades">P/L: $0.00</div>
         </div>

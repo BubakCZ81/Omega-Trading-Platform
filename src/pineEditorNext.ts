@@ -1,6 +1,7 @@
 import './monacoEnvironment';
 import * as monaco from 'monaco-editor';
 import { pineReference, type PineReferenceEntry } from './pineReference';
+import { validatePineStaticSource } from './pineStaticValidator';
 
 export type PineModel = monaco.editor.ITextModel;
 export type PineEditor = monaco.editor.IStandaloneCodeEditor;
@@ -13,7 +14,7 @@ declare global {
 }
 
 const pineLanguageId = 'pine';
-const syntaxOwner = 'pine-syntax';
+const syntaxOwner = 'pine-v6-validator';
 const runtimeOwner = 'pine-runtime';
 const editorFontSizeStorageKey = 'omega.pine-editor.font-size';
 const defaultEditorFontSize = 15;
@@ -243,125 +244,12 @@ function lineColumnAt(source: string, offset: number): { line: number; column: n
   return { line: lines.length, column: (lines.at(-1)?.length ?? 0) + 1 };
 }
 
-function syntaxMarkers(source: string): monaco.editor.IMarkerData[] {
-  const markers: monaco.editor.IMarkerData[] = [];
-  const version = source.match(/^\s*\/\/@version=(\d+)\s*$/m);
-  if (!version) {
-	markers.push({
-	  severity: monaco.MarkerSeverity.Warning,
-	  message: 'Add a Pine version directive, for example //@version=6.',
-	  startLineNumber: 1,
-	  startColumn: 1,
-	  endLineNumber: 1,
-	  endColumn: 2,
-	});
-  } else if (!['5', '6'].includes(version[1])) {
-	const line = source.slice(0, version.index ?? 0).split('\n').length;
-	markers.push({
-	  severity: monaco.MarkerSeverity.Error,
-	  message: `Unsupported Pine version ${version[1]}. Use version 5 or 6.`,
-	  startLineNumber: line,
-	  startColumn: 1,
-	  endLineNumber: line,
-	  endColumn: 20,
-	});
-  }
-
-  if (source.trim() && !/^\s*(indicator|strategy|library)\s*\(/m.test(source)) {
-	markers.push({
-	  severity: monaco.MarkerSeverity.Warning,
-	  message: 'Declare an indicator, strategy, or library.',
-	  startLineNumber: 1,
-	  startColumn: 1,
-	  endLineNumber: 1,
-	  endColumn: 2,
-	});
-  }
-
-  const stack: Array<{ char: string; offset: number }> = [];
-  const pairs: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
-  let inString: '"' | "'" | null = null;
-  let escaped = false;
-  let inComment = false;
-  for (let offset = 0; offset < source.length; offset += 1) {
-	const char = source[offset];
-	const next = source[offset + 1];
-	if (char === '\n') {
-	  inComment = false;
-	  if (inString) {
-		const location = lineColumnAt(source, offset);
-		markers.push({
-		  severity: monaco.MarkerSeverity.Error,
-		  message: 'Unterminated string literal.',
-		  startLineNumber: location.line,
-		  startColumn: location.column,
-		  endLineNumber: location.line,
-		  endColumn: location.column + 1,
-		});
-		inString = null;
-	  }
-	  escaped = false;
-	  continue;
-	}
-	if (inComment) continue;
-	if (!inString && char === '/' && next === '/') {
-	  inComment = true;
-	  offset += 1;
-	  continue;
-	}
-	if (inString) {
-	  if (escaped) escaped = false;
-	  else if (char === '\\') escaped = true;
-	  else if (char === inString) inString = null;
-	  continue;
-	}
-	if (char === '"' || char === "'") {
-	  inString = char;
-	  continue;
-	}
-	if (char === '(' || char === '[' || char === '{') {
-	  stack.push({ char, offset });
-	} else if (char === ')' || char === ']' || char === '}') {
-	  const expected = pairs[char];
-	  const previous = stack.at(-1);
-	  if (!previous || previous.char !== expected) {
-		const location = lineColumnAt(source, offset);
-		markers.push({
-		  severity: monaco.MarkerSeverity.Error,
-		  message: `Unexpected closing '${char}'.`,
-		  startLineNumber: location.line,
-		  startColumn: location.column,
-		  endLineNumber: location.line,
-		  endColumn: location.column + 1,
-		});
-	  } else {
-		stack.pop();
-	  }
-	}
-  }
-	if (inString) {
-	const location = lineColumnAt(source, source.length);
-	markers.push({
-	  severity: monaco.MarkerSeverity.Error,
-	  message: 'Unterminated string literal.',
-	  startLineNumber: location.line,
-	  startColumn: Math.max(1, location.column - 1),
-	  endLineNumber: location.line,
-	  endColumn: location.column,
-	});
-  }
-  for (const unmatched of stack) {
-	const location = lineColumnAt(source, unmatched.offset);
-	markers.push({
-	  severity: monaco.MarkerSeverity.Error,
-	  message: `Unclosed '${unmatched.char}'.`,
-	  startLineNumber: location.line,
-	  startColumn: location.column,
-	  endLineNumber: location.line,
-	  endColumn: location.column + 1,
-	});
-  }
-  return markers;
+function diagnosticRange(source: string, line: number): { startColumn: number; endColumn: number } {
+  const lines = source.split(/\r?\n/);
+  const lineNumber = Math.max(1, Math.min(lines.length, line));
+  const lineText = lines[lineNumber - 1] ?? '';
+  const maxColumn = lineText.length + 1;
+  return { startColumn: 1, endColumn: Math.max(2, maxColumn) };
 }
 
 function compilerMarkers(error: Error | null, source = ''): monaco.editor.IMarkerData[] {
@@ -390,19 +278,43 @@ function compilerMarkers(error: Error | null, source = ''): monaco.editor.IMarke
       }
     }
   }
+  line = Math.min(line, Math.max(1, source.split(/\r?\n/).length));
+  const range = diagnosticRange(source, line);
   return [{
 	severity: monaco.MarkerSeverity.Error,
 	message,
 	startLineNumber: line,
-	startColumn: column,
+	startColumn: range.startColumn,
 	endLineNumber: line,
-	endColumn: column + 1,
+	endColumn: range.endColumn,
   }];
 }
 
 function validateModel(model: PineModel): void {
-  monaco.editor.setModelMarkers(model, syntaxOwner, syntaxMarkers(model.getValue()));
+  monaco.editor.setModelMarkers(model, syntaxOwner, staticMarkers(model.getValue()));
   monaco.editor.setModelMarkers(model, runtimeOwner, []);
+}
+
+function staticMarkers(source: string): monaco.editor.IMarkerData[] {
+  const lines = source.split(/\r?\n/);
+  return validatePineStaticSource(source).map(diagnostic => {
+    const line = Math.min(diagnostic.line, Math.max(1, lines.length));
+    const lineEnd = Math.max(2, (lines[line - 1]?.length ?? 0) + 1);
+    const startColumn = Math.min(diagnostic.column, lineEnd - 1);
+    return {
+      severity: diagnostic.severity === 'error'
+        ? monaco.MarkerSeverity.Error
+        : diagnostic.severity === 'warning'
+          ? monaco.MarkerSeverity.Warning
+          : monaco.MarkerSeverity.Info,
+      message: diagnostic.message,
+      source: diagnostic.source,
+      startLineNumber: line,
+      startColumn,
+      endLineNumber: line,
+      endColumn: Math.min(lineEnd, startColumn + diagnostic.length),
+    };
+  });
 }
 
 function findReferenceAtPosition(model: PineModel, position: monaco.Position): { entry: PineReferenceEntry; range: monaco.Range } | undefined {
@@ -543,16 +455,12 @@ export interface PineSyntaxDiagnostic {
   message: string;
   line: number;
   column: number;
-  severity: 'error' | 'warning';
+  severity: 'error' | 'warning' | 'info';
+  source: string;
 }
 
 export function getPineSyntaxDiagnostics(model: PineModel): PineSyntaxDiagnostic[] {
-  return syntaxMarkers(model.getValue()).map(marker => ({
-    message: marker.message,
-    line: marker.startLineNumber,
-    column: marker.startColumn,
-    severity: marker.severity === monaco.MarkerSeverity.Error ? 'error' : 'warning',
-  }));
+  return validatePineStaticSource(model.getValue());
 }
 
 export function setPineEditorTheme(theme: 'dark' | 'light'): void {
@@ -562,6 +470,16 @@ export function setPineEditorTheme(theme: 'dark' | 'light'): void {
 
 export function setPineDiagnostics(model: PineModel, error: Error | null): void {
   monaco.editor.setModelMarkers(model, runtimeOwner, compilerMarkers(error, model.getValue()));
+}
+
+export function setPinePreviewDiagnostics(model: PineModel, error: Error | null): void {
+  const markers = compilerMarkers(error, model.getValue()).map(marker => ({
+    ...marker,
+    severity: monaco.MarkerSeverity.Warning,
+    source: 'PineTS sample-data check (not TradingView compile)',
+    message: `PineTS sample-data check: ${marker.message}`,
+  }));
+  monaco.editor.setModelMarkers(model, runtimeOwner, markers);
 }
 
 export function setPineCompileDiagnostics(model: PineModel, error: Error | null): void {
