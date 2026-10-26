@@ -2,13 +2,14 @@ import { registerLayout, VelaWorkspace } from '@luxalgo/vela/workspace';
 import './styles.css';
 import './editorDrawer';
 import { appAssetUrl } from './appPaths';
-import { registerLegendAction, registerIcon, registerRendererLayer, registerStatePersistence, registerWidgetAction, timeframeToMs, type IndicatorHandle } from '@luxalgo/vela';
+import { registerRendererLayer, registerStatePersistence, type IndicatorHandle } from '@luxalgo/vela';
 import { BinanceProvider } from '@luxalgo/vela/providers/binance';
 import { initializeCTraderFeed } from './ctraderFeed';
 import type { PineModel } from './pineEditorNext';
 import { getSavedScripts, saveScriptsToStorage } from './pineStorage';
 import { createPineScriptManager } from './pineScriptManager';
 import { createPineEditorLifecycle } from './pineEditorLifecycle';
+import { initializePineScriptControls } from './pineScriptControls';
 import { createPriceBarRatioController, type PriceBarRatioController } from './priceBarRatio';
 import {
   BID_ASK_COLOR_OPTIONS,
@@ -41,6 +42,8 @@ import { initializePaperTradeDrag } from './paperTradeDrag';
 import { applyThemeUi, initializeThemeMenu, isOmegaTheme, velaTheme, type OmegaTheme } from './themeControls';
 import { LoadedBarsController } from './loadedBars';
 import { initializeTradingAccounts } from './tradingAccounts';
+import { initializeChartSettingsActions } from './chartSettingsActions';
+import { initializeChartContextActions } from './chartContextActions';
 // createWindow will be loaded lazily inside openTauriStandaloneEditor
 
 const startupScreen = document.getElementById('omega-startup-screen');
@@ -912,9 +915,6 @@ const pineEditorLifecycle = createPineEditorLifecycle({
   displayDiagnostics: (error, code, name) => pineScriptManager.displayDiagnosticsInConsole(error, code, name),
 });
 const setEditorStatus = pineEditorLifecycle.setStatus;
-const getScriptModel = pineEditorLifecycle.getScriptModel;
-const initializeCodeEditor = pineEditorLifecycle.initialize;
-const getEditorValue = pineEditorLifecycle.getValue;
 const loadScriptIntoEditor = pineEditorLifecycle.loadScript;
 const refreshDropdown = pineEditorLifecycle.refreshDropdown;
 
@@ -930,130 +930,15 @@ pineScriptManager = createPineScriptManager({
   isPropagating: () => propagatingGroupState,
   setPropagating: value => { propagatingGroupState = value; },
 });
-const scriptIndicatorId = pineScriptManager.scriptIndicatorId;
-const applyScriptToChart = pineScriptManager.applyScriptToChart;
-const addScriptToChart = pineScriptManager.addScriptToChart;
-const updateScriptOnChart = pineScriptManager.updateScriptOnChart;
 const scriptSelect = document.getElementById('script-select') as HTMLSelectElement;
 pineEditorLifecycle.attach();
 refreshDropdown();
 loadScriptIntoEditor(currentScriptName);
 
-scriptSelect.addEventListener('change', () => {
-  pineEditorLifecycle.cancelPendingSave();
-  currentScriptName = scriptSelect.value;
-  loadScriptIntoEditor(currentScriptName);
-});
-
-const modal = document.getElementById('new-script-modal')!;
-const modalInput = document.getElementById('modal-script-name') as HTMLInputElement;
-const modalConfirmButton = document.getElementById('modal-confirm-btn') as HTMLButtonElement;
 pineEditorModule.value?.createPineAiAssistant({
   getCurrentScriptName: () => currentScriptName,
-  getEditorValue,
+  getEditorValue: pineEditorLifecycle.getValue,
 });
-
-const openStandaloneEditorButton = document.getElementById('btn-open-standalone-editor') as HTMLButtonElement | null;
-
-
-
-async function openTauriStandaloneEditor(name: string, source: string): Promise<boolean> {
-  scripts[name] = source;
-  saveScriptsToStorage(scripts);
-  if (window.velaPineEditorWindow) {
-    return window.velaPineEditorWindow.openScript(name, source);
-  }
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.set('window', 'pine-editor');
-    url.searchParams.set('script', name);
-    const popup = window.open(url.toString(), 'omega-pine-editor-window', 'popup=yes,width=1280,height=820');
-    return popup !== null;
-  } catch (error) {
-    console.error('Could not open the separate Pine Editor:', error);
-    return false;
-  }
-}
-
-if (openStandaloneEditorButton) {
-  if (standalonePineEditor) {
-    openStandaloneEditorButton.hidden = true;
-  } else {
-    openStandaloneEditorButton.addEventListener('click', async () => {
-      if (!window.velaPineEditorWindow) {
-        const opened = await openTauriStandaloneEditor(currentScriptName, getEditorValue());
-        const message = opened
-          ? `Opened "${currentScriptName}" in a separate editor window.`
-          : 'The separate Pine Editor window was blocked by the browser.';
-        setEditorStatus(message, opened ? 'success' : 'error');
-        window.addConsoleActivity?.(message, opened ? 'success' : 'error');
-        return;
-      }
-
-      openStandaloneEditorButton.disabled = true;
-      try {
-        const opened = await window.velaPineEditorWindow.openScript(currentScriptName, getEditorValue());
-        if (opened) window.toggleEditor(false);
-      } finally {
-        openStandaloneEditorButton.disabled = false;
-      }
-    });
-  }
-}
-
-if (!standalonePineEditor) {
-  window.velaPineEditorWindow?.onOpenDocked(() => {
-    window.toggleEditor(true);
-  });
-  window.velaPineEditorWindow?.onScriptUpdated(async ({ name, source, action }) => {
-    if (!name || typeof source !== 'string') return;
-    scripts[name] = source;
-    saveScriptsToStorage(scripts);
-    if (!Object.keys(scripts).includes(currentScriptName)) currentScriptName = name;
-    refreshDropdown();
-    try {
-      const error = action === 'update'
-        ? await updateScriptOnChart(name, source)
-        : await addScriptToChart(name, source);
-      if (error) {
-        setEditorStatus(error.message, 'error');
-        window.velaPineEditorWindow?.publishScriptResult({ name, action, ok: false, message: error.message });
-        return;
-      }
-      const message = `${action === 'update' ? 'Updated' : 'Added'} "${name}" from the separate Pine Editor.`;
-      setEditorStatus(message, 'success');
-      window.velaPineEditorWindow?.publishScriptResult({ name, action, ok: true, message });
-    } catch (error) {
-      const message = `Could not update the chart: ${error instanceof Error ? error.message : String(error)}`;
-      setEditorStatus(message, 'error');
-      window.velaPineEditorWindow?.publishScriptResult({ name, action, ok: false, message });
-    }
-  });
-}
-
-if (standalonePineEditor) {
-  const requestedScript = new URLSearchParams(window.location.search).get('script');
-  if (requestedScript && scripts[requestedScript]) currentScriptName = requestedScript;
-  window.velaPineEditorWindow?.onOpenScript(({ name, source }) => {
-    if (!name || typeof source !== 'string') return;
-    scripts[name] = source;
-    saveScriptsToStorage(scripts);
-    currentScriptName = name;
-    refreshDropdown();
-    void initializeCodeEditor().then(() => {
-      const model = getScriptModel(name);
-      if (model && model.getValue() !== source) model.setValue(source);
-      loadScriptIntoEditor(name);
-      pineEditorLifecycle.getEditor()?.focus();
-      setEditorStatus(`Opened "${name}" from chart.`, 'success');
-    });
-  });
-  window.velaPineEditorWindow?.onScriptResult(({ name, action, ok, message }) => {
-    if (name !== currentScriptName) return;
-    setEditorStatus(message, ok ? 'success' : 'error');
-    if (!ok) window.addConsoleOutput?.(message, 'error', `pine:${name}`);
-  });
-}
 
 async function validatePineSource(code: string): Promise<Error | null> {
   try {
@@ -1079,279 +964,25 @@ async function validatePineSource(code: string): Promise<Error | null> {
   }
 }
 
-async function transpileSavedScript(name: string, code: string): Promise<Error | null> {
-  const error = await validatePineSource(code);
-  if (!error) {
-    const model = editorModels.get(name);
-    if (model) pineEditorLifecycle.getCompileDiagnostics()?.(model, null);
-    window.clearConsoleDiagnostics?.(`pine:${name}`);
-    return null;
-  }
-  const model = editorModels.get(name);
-  if (model) pineEditorLifecycle.getCompileDiagnostics()?.(model, error);
-  window.clearConsoleDiagnostics?.(`pine:${name}`);
-  pineScriptManager.displayDiagnosticsInConsole(error, code, name);
-  return error;
-}
-
-document.getElementById('btn-save')!.addEventListener('click', () => { void (async () => {
-  const code = getEditorValue();
-  scripts[currentScriptName] = code;
-  saveScriptsToStorage(scripts);
-  setEditorStatus(`Saved "${currentScriptName}". Transpiling…`);
-  const error = await transpileSavedScript(currentScriptName, code);
-  if (error) {
-    setEditorStatus(error.message, 'error');
-    return;
-  }
-  setEditorStatus(`Saved and transpiled "${currentScriptName}".`, 'success');
-})(); });
-
-async function addOrUpdateCurrentScript(action: 'add' | 'update'): Promise<void> {
-  const code = action === 'add' ? (scripts[currentScriptName] ?? '') : getEditorValue();
-
-  if (action === 'add' && code !== getEditorValue()) {
-    setEditorStatus(`Adding the last saved version of "${currentScriptName}". Save first to use current changes.`);
-  } else if (action === 'update') {
-    scripts[currentScriptName] = code;
-    saveScriptsToStorage(scripts);
-  }
-
-  // The standalone editor has no visible chart and must never compile against its
-  // hidden workspace. Send the source to the primary window, which owns the live
-  // chart, its data engine and all indicator handles.
-  if (standalonePineEditor) {
-    if (!window.velaPineEditorWindow) {
-      setEditorStatus('The main Omega window is not available.', 'error');
-      return;
-    }
-    window.velaPineEditorWindow.publishScriptUpdate({ name: currentScriptName, source: code, action });
-    setEditorStatus(`${action === 'add' ? 'Adding' : 'Updating'} "${currentScriptName}" on the main chart…`);
-    return;
-  }
-
-  setEditorStatus('Compiling Pine script');
-  try {
-    const error = action === 'add'
-      ? await addScriptToChart(currentScriptName, code)
-      : await updateScriptOnChart(currentScriptName, code);
-    if (error) {
-      setEditorStatus(error.message, 'error');
-      return;
-    }
-    setEditorStatus(`${action === 'add' ? 'Added' : 'Updated'} "${currentScriptName}" on chart.`, 'success');
-  } catch (error) {
-    setEditorStatus(error instanceof Error ? error.message : String(error), 'error');
-  }
-}
-
-document.getElementById('btn-add-to-chart')!.addEventListener('click', () => { void addOrUpdateCurrentScript('add'); });
-document.getElementById('btn-update-chart')!.addEventListener('click', () => { void addOrUpdateCurrentScript('update'); });
-document.getElementById('btn-export-script')!.addEventListener('click', async () => {
-  const source = getEditorValue();
-  const name = currentScriptName || 'pine-script';
-  try {
-    if (window.velaPineExport) {
-      const result = await window.velaPineExport.save(name, source);
-      if (!result.canceled) setEditorStatus(`Exported "${name}"${result.path ? ` to ${result.path}` : '.'}`, 'success');
-      return;
-    }
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(new Blob([source], { type: 'text/plain;charset=utf-8' }));
-    link.download = `${name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').trim() || 'pine-script'}.pine`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    setEditorStatus(`Exported "${name}".`, 'success');
-  } catch (error) {
-    setEditorStatus(`Could not export script: ${error instanceof Error ? error.message : String(error)}`, 'error');
-  }
+const pineScriptControls = initializePineScriptControls({
+  workspace,
+  scripts,
+  getCurrentScriptName: () => currentScriptName,
+  setCurrentScriptName: name => { currentScriptName = name; },
+  editorModels,
+  scriptHandles,
+  groupByCellId,
+  scriptSelect,
+  editorLifecycle: pineEditorLifecycle,
+  scriptManager: pineScriptManager,
+  standalone: standalonePineEditor,
+  pineEditorEnabled: pineEditorModule.enabled && Boolean(pineEditorModule.value),
+  pineTsEnabled: pineTsModule.enabled && Boolean(pineTsModule.value),
+  saveScripts: saveScriptsToStorage,
+  validateSource: validatePineSource,
 });
-
-document.getElementById('btn-upgrade-v6')!.addEventListener('click', async (event) => {
-  const button = event.currentTarget as HTMLButtonElement;
-  button.disabled = true;
-  try {
-    if (!pineTsModule.enabled || !pineTsModule.value) {
-      throw new Error('PineTS is disabled or unavailable. The chart is still running without Pine script compilation.');
-    }
-    await initializeCodeEditor();
-    const editor = pineEditorLifecycle.getEditor();
-    if (!editor) throw new Error('The Pine editor is not ready.');
-    const source = editor.getValue();
-    const [converterModule, pineTsRuntime] = await Promise.all([
-      import('./pineVersionConverter.mjs'),
-      import('pinets'),
-    ]);
-    const conversion = converterModule.convertPineScriptToV6(source);
-    pineEditorLifecycle.cancelPendingSave();
-    editor.updateOptions({ readOnly: true });
-    setEditorStatus(`Checking Pine v${conversion.version} → v6 conversion…`);
-
-    const validationBars = Array.from({ length: 120 }, (_, index) => {
-      const close = 100 + Math.sin(index / 4) * 5 + index * 0.03;
-      const open = close + Math.sin(index) * 0.3;
-      return {
-        open,
-        high: Math.max(open, close) + 1,
-        low: Math.min(open, close) - 1,
-        close,
-        volume: 100 + index % 17,
-        openTime: 1_700_000_000_000 + index * 60_000,
-      };
-    });
-    await new pineTsRuntime.PineTS(validationBars).run(conversion.source);
-
-    const chartError = await applyScriptToChart(currentScriptName, conversion.source);
-    if (chartError) throw chartError;
-
-    pineEditorLifecycle.setValueWithoutValidation(conversion.source);
-    scripts[currentScriptName] = conversion.source;
-    saveScriptsToStorage(scripts);
-    setEditorStatus(`Upgraded Pine v${conversion.version} to v6, saved, and compiled "${currentScriptName}".`, 'success');
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    setEditorStatus(`Unable to upgrade script: ${reason}`, 'error');
-  } finally {
-    pineEditorLifecycle.getEditor()?.updateOptions({ readOnly: false });
-    button.disabled = false;
-  }
-});
-
-document.getElementById('btn-delete')!.addEventListener('click', () => {
-  if (Object.keys(scripts).length <= 1) { alert('Keep at least one script.'); return; }
-  if (!confirm(`Delete "${currentScriptName}"?`)) return;
-  const deletedName = currentScriptName;
-  scriptHandles.get(deletedName)?.forEach(handle => handle.remove());
-  for (const cell of workspace.cells()) {
-    if (cell.id !== workspace.active.id && groupByCellId[cell.id] === groupByCellId[workspace.active.id]) {
-      cell.chart.indicators().find(indicator => indicator.id === scriptIndicatorId(deletedName))?.remove();
-    }
-  }
-  scriptHandles.delete(deletedName);
-  editorModels.get(deletedName)?.dispose();
-  editorModels.delete(deletedName);
-  delete scripts[deletedName];
-  saveScriptsToStorage(scripts);
-  currentScriptName = Object.keys(scripts)[0];
-  refreshDropdown();
-  loadScriptIntoEditor(currentScriptName);
-  setEditorStatus(`Deleted "${deletedName}".`, 'success');
-});
-
-document.getElementById('btn-new')!.addEventListener('click', () => {
-  modalInput.value = '';
-  modal.style.display = 'flex';
-  setTimeout(() => modalInput.focus(), 50);
-});
-document.getElementById('modal-cancel-btn')!.addEventListener('click', () => {
-  modal.style.display = 'none';
-});
-modalConfirmButton.addEventListener('click', () => {
-  const name = modalInput.value.trim();
-  if (!name) return;
-  if (Object.hasOwn(scripts, name)) {
-    setEditorStatus(`A script named "${name}" already exists.`, 'error');
-    return;
-  }
-  scripts[name] = `//@version=6\nindicator(${JSON.stringify(name)}, overlay = true)\n\nplot(ta.ema(close, 20), "EMA 20", color = color.yellow)\n`;
-  saveScriptsToStorage(scripts);
-  currentScriptName = name;
-  refreshDropdown();
-  loadScriptIntoEditor(name);
-  modal.style.display = 'none';
-  setEditorStatus(`Created "${name}".`, 'success');
-});
-
-
-
-export async function openScriptInEditor(name: string, source?: string) {
-  if (!pineEditorModule.enabled || !pineEditorModule.value) {
-    throw new Error('The Pine editor module is disabled or unavailable.');
-  }
-  // 1. Open the drawer if closed
-  const drawer = document.getElementById('editor-drawer');
-  if (drawer && drawer.style.display !== 'flex') {
-    window.toggleEditor(true);
-  }
-
-  // 2. If source provided, save to memory & storage and update model
-  if (source) {
-    scripts[name] = source;
-    saveScriptsToStorage(scripts);
-    const existingModel = editorModels.get(name);
-    if (existingModel && !existingModel.isDisposed()) {
-      existingModel.setValue(source);
-    }
-  }
-
-  currentScriptName = name;
-  refreshDropdown();
-  scriptSelect.value = name;
-
-  await initializeCodeEditor();
-  loadScriptIntoEditor(name);
-  pineEditorLifecycle.getEditor()?.layout();
-  pineEditorLifecycle.getEditor()?.focus();
-  setEditorStatus(`Editing "${name}"`, 'success');
-}
+export const openScriptInEditor = pineScriptControls.openScriptInEditor;
 (window as any).openScriptInEditor = openScriptInEditor;
-
-// ---------------------------------------------------------------------------
-// Register TradingView-style "{ }" Legend Row Action: Open Source Code
-// ---------------------------------------------------------------------------
-if (pineEditorModule.enabled && pineEditorModule.value) {
-registerIcon(
-  'source-code',
-  '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">' +
-  '<path d="M5.5 3C4.5 3 4 3.5 4 4.5v2c0 .8-.5 1.5-1.5 1.5.8 0 1.5.7 1.5 1.5v2c0 1 .5 1.5 1.5 1.5M10.5 3c1 0 1.5.5 1.5 1.5v2c0 .8.5 1.5 1.5 1.5-.8 0-1.5.7-1.5 1.5v2c0 1-.5 1.5-1.5 1.5"/>' +
-  '</svg>'
-);
-
-registerLegendAction({
-  id: 'open-source-code',
-  icon: 'source-code',
-  tooltip: 'Source code',
-  order: 5,
-  when: () => true,
-  run: async (_ctx, indicator) => {
-    let source = indicator.source;
-    const name = indicator.title || 'Indicator';
-
-    if (!source && scripts[name]) {
-      source = scripts[name];
-    }
-
-    if (!source) {
-      try {
-        const catRes = await fetch(appAssetUrl('/indicators/catalog.json'));
-        if (catRes.ok) {
-          const catalog: Array<{ name: string; url: string }> = await catRes.json();
-          const cleanName = name.replace(/\s*\([^)]*\)/g, '').trim().toLowerCase();
-          const found = catalog.find(c => {
-            const cName = c.name.toLowerCase();
-            return cName === cleanName || cName.includes(cleanName) || cleanName.includes(cName);
-          });
-          if (found) {
-            const srcRes = await fetch(appAssetUrl(found.url));
-            if (srcRes.ok) source = await srcRes.text();
-          }
-        }
-      } catch (err) {
-        console.warn('Could not fetch source from catalog:', err);
-      }
-    }
-
-    if (window.velaPineEditorWindow) {
-      const sourceToOpen = source ?? scripts[name] ?? '';
-      scripts[name] = sourceToOpen;
-      saveScriptsToStorage(scripts);
-      const opened = await window.velaPineEditorWindow.openScript(name, sourceToOpen);
-      if (opened) return;
-    }
-    await openScriptInEditor(name, source);
-  },
-});
-}
 
 if (!pineEngine) {
   console.info('PineTS is disabled; the chart is available without Pine script compilation.');
@@ -1469,256 +1100,23 @@ function setTheme(theme: OmegaTheme) {
 
 initializeThemeMenu({ getTheme: () => currentTheme, setTheme });
 
-function installSettingsActionButtons(): void {
-  // Vela Settings supports value rows only. Add true one-shot actions beside its
-  // native Reset button instead of misrepresenting commands as select dropdowns.
-  const settingsDialog = document.querySelector<HTMLElement>('.vela-dialog--settings');
-  const resetButton = settingsDialog?.querySelector<HTMLButtonElement>('button.vela-sd-btn');
-  const footer = resetButton?.parentElement;
-  if (!footer || footer.querySelector('[data-omega-settings-action]')) return;
+const { openChartSettings } = initializeChartSettingsActions({ workspace, openReplayControls });
 
-  const makeButton = (label: string, action: () => void) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'vela-sd-btn';
-    button.textContent = label;
-    button.dataset.omegaSettingsAction = label;
-    button.addEventListener('click', action);
-    footer.insertBefore(button, resetButton);
-  };
-  makeButton('Replay', openReplayControls);
-  makeButton('Check for updates', () => document.getElementById('check-updates')?.click());
-}
-
-// The same Settings dialog can also be opened from Vela's in-chart gear. Observe
-// only newly inserted dialog roots so the action buttons are present on that path too.
-new MutationObserver(records => {
-  const settingsWasInserted = records.some(record => [...record.addedNodes].some(node =>
-    node instanceof Element && (node.matches('.vela-dialog--settings') || Boolean(node.querySelector('.vela-dialog--settings'))),
-  ));
-  if (settingsWasInserted) requestAnimationFrame(installSettingsActionButtons);
-}).observe(document.body, { childList: true, subtree: true });
-
-function openChartSettings(): void {
-  // The toolbar belongs to the chart the trader is working with, not necessarily
-  // the first workspace chart. Its sections were registered when the cell mounted.
-  const activeChart = workspace.active?.chart ?? workspace.chart;
-  try {
-    activeChart.renderer.setSettingsVisibility({ hidden: [] });
-    activeChart.renderer.openSettings();
-    requestAnimationFrame(installSettingsActionButtons);
-  } catch (error) {
-    console.error('Could not open chart settings:', error);
-    workspace.toast('Could not open chart settings. Please try again.', 'error');
-  }
-}
-
-// Keep the chart's right-click menu useful for the actions traders reach for
-// while working on the plot. These actions deliberately reuse the same paths as
-// the toolbar and Settings, so there is one source of truth for each command.
-const contextActionIcons: Record<string, string> = {
-  'omega-context-cancel-order': '<path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="m17 3 4 4m0-4-4 4"/>',
-  'omega-context-add-order': '<path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="M19 14v7m-3.5-3.5h7"/>',
-  'omega-context-volume': '<path d="M3 10v4h4l5 4V6l-5 4z"/><path d="M16 9a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12"/>',
-  'omega-context-bid-ask': '<path d="M3 7h18M3 17h18"/><path d="m7 4-4 3 4 3m10 4 4 3-4 3"/>',
-  'omega-context-reset-view': '<path d="M4 11a8 8 0 1 1 2 6"/><path d="M4 4v7h7"/><path d="M12 7v5l3 2"/>',
-  'omega-context-background': '<path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-3.7 2 2 0 0 1 1-3.8h2a3 3 0 0 0 3-3c0-4.1-4-7.5-9-7.5z"/><path d="M7.5 10h.01M11 7h.01M15.5 8.5h.01"/>',
-  'omega-context-theme-light': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>',
-  'omega-context-theme-dark': '<path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2z"/>',
-  'omega-context-pine': '<path d="m8 5-6 7 6 7m8-14 6 7-6 7m-2-15-4 16"/>',
-  'omega-context-replay': '<path d="M4 5v6h6"/><path d="M5.5 15a7 7 0 1 0 1-7"/><path d="m10 8 6 4-6 4z"/>',
-  'omega-context-replay-panel': '<path d="M3 4h18v16H3z"/><path d="M3 9h18m-6-5v5"/><path d="m8 12 5 3-5 3z"/>',
-};
-for (const [id, pathData] of Object.entries(contextActionIcons)) {
-  registerIcon(id, `<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${pathData}</svg>`);
-}
-registerWidgetAction({
-  id: 'omega-context-cancel-pending-paper-order',
-  target: 'context:body',
-  label: 'Cancel pending paper order',
-  icon: 'omega-context-cancel-order',
-  order: -21,
-  when: context => context.pointer?.paneKind === 'price'
-    && Number.isFinite(context.pointer.price)
-    && Boolean(paperTradingModule?.hasPendingPaperOrderAtPrice(context.chart, context.pointer?.price)),
-  run: async context => {
-    const paperTrading = await ensurePaperTrading();
-    if (!paperTrading.cancelPendingPaperOrderAtPrice(context.chart, context.pointer?.price)) {
-      context.toast('No pending paper order was found at that price.', 'error');
-    }
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-add-pending-paper-order',
-  target: 'context:body',
-  label: 'Add pending paper order…',
-  icon: 'omega-context-add-order',
-  order: -20,
-  when: context => context.pointer?.paneKind === 'price'
-    && Number.isFinite(context.pointer.price)
-    && Number(context.pointer.price) > 0
-    && Boolean(context.symbol)
-    && Boolean(context.chart.data.resolve(context.symbol)),
-  run: async context => {
-    const paperTrading = await ensurePaperTrading();
-    paperTrading.openPendingOrderDialog(context.chart, context.pointer?.price);
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-show-real-volumes',
-  target: 'context:body',
-  label: 'Show real volumes',
-  icon: 'omega-context-volume',
-  order: -28,
-  when: context => !context.chart.presentNativeIndicators().includes('volume'),
-  run: context => {
-    context.addNativeIndicator('volume');
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-hide-real-volumes',
-  target: 'context:body',
-  label: 'Hide real volumes',
-  icon: 'omega-context-volume',
-  order: -28,
-  when: context => context.chart.presentNativeIndicators().includes('volume'),
-  run: context => {
-    const volume = context.chart.indicators().find(indicator => indicator.nativeType === 'volume');
-    if (!volume) {
-      context.toast('Real volumes could not be disabled because the volume indicator is unavailable.', 'error');
-      return;
-    }
-    volume.remove();
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-show-bid-ask-lines',
-  target: 'context:body',
-  label: 'Show bid/ask lines',
-  icon: 'omega-context-bid-ask',
-  order: -27,
-  when: () => !showBidAskLines,
-  run: () => {
-    showBidAskLines = true;
-    localStorage.setItem('vela_show_bid_ask_lines', 'true');
-    for (const controller of bidAskLinesControllers.values()) controller.setEnabled(true);
+initializeChartContextActions({
+  workspace,
+  ensurePaperTrading,
+  hasPendingPaperOrderAtPrice: (chart, price) => Boolean(paperTradingModule?.hasPendingPaperOrderAtPrice(chart, price)),
+  getBidAskLinesVisible: () => showBidAskLines,
+  setBidAskLinesVisible: visible => {
+    showBidAskLines = visible;
+    localStorage.setItem('vela_show_bid_ask_lines', String(visible));
+    for (const controller of bidAskLinesControllers.values()) controller.setEnabled(visible);
     if (workspaceInitialized) workspace.context().stateChanged();
   },
-});
-registerWidgetAction({
-  id: 'omega-context-hide-bid-ask-lines',
-  target: 'context:body',
-  label: 'Hide bid/ask lines',
-  icon: 'omega-context-bid-ask',
-  order: -27,
-  when: () => showBidAskLines,
-  run: () => {
-    showBidAskLines = false;
-    localStorage.setItem('vela_show_bid_ask_lines', 'false');
-    for (const controller of bidAskLinesControllers.values()) controller.setEnabled(false);
-    if (workspaceInitialized) workspace.context().stateChanged();
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-reset-view',
-  target: 'context:body',
-  label: 'Reset chart view (50 bars)',
-  icon: 'omega-context-reset-view',
-  order: -29,
-  run: context => {
-    workspace.active.resetView();
-    const fullRange = context.chart.getVisibleRange();
-    const barDuration = timeframeToMs(context.timeframe);
-    if (fullRange) {
-      const requestedBars = Math.max(0, Number(context.chart.market.bars) || 0);
-      const averageLoadedBarDuration = requestedBars > 50
-        ? (fullRange.to - fullRange.from) / Math.max(1, requestedBars - 1)
-        : 0;
-      const resetDuration = averageLoadedBarDuration > 0 ? averageLoadedBarDuration : barDuration;
-      if (!Number.isFinite(resetDuration) || resetDuration <= 0) return;
-      context.chart.setVisibleRange({
-        from: fullRange.to - resetDuration * 49,
-        to: fullRange.to,
-      });
-    }
-    context.toast('Chart view reset to the latest 50 bars.', 'success');
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-background',
-  target: 'context:body',
-  label: 'Chart background color…',
-  icon: 'omega-context-background',
-  order: 120,
-  run: context => {
-    context.chart.renderer.openSettings('Canvas');
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-theme-light',
-  target: 'context:body',
-  label: 'Switch to Light theme',
-  icon: 'omega-context-theme-light',
-  order: 121,
-  when: () => currentTheme !== 'light',
-  run: context => {
-    setTheme('light');
-    context.toast('Switched to Light theme.', 'success');
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-theme-dark',
-  target: 'context:body',
-  label: 'Switch to Dark blue theme',
-  icon: 'omega-context-theme-dark',
-  order: 121,
-  when: () => currentTheme !== 'dark',
-  run: context => {
-    setTheme('dark');
-    context.toast('Switched to Dark blue theme.', 'success');
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-pine-window',
-  target: 'context:body',
-  label: 'Open Pine Editor in new window',
-  icon: 'omega-context-pine',
-  order: 122,
-  run: context => {
-    const button = document.getElementById('btn-open-standalone-editor') as HTMLButtonElement | null;
-    if (button && !button.hidden) {
-      button.click();
-      return;
-    }
-    context.toast('The separate Pine Editor is available only in the Omega desktop app.', 'info');
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-start-replay',
-  target: 'context:body',
-  label: 'Start replay from here',
-  icon: 'omega-context-replay',
-  order: 123,
-  when: context => Number.isFinite(context.pointer?.time),
-  run: context => {
-    const from = context.pointer?.time;
-    if (from == null || !Number.isFinite(from)) return;
-    const cell = workspace.cells().find(candidate => candidate.chart === context.chart);
-    if (!cell) {
-      context.toast('Could not identify the chart for replay.', 'error');
-      return;
-    }
-    openReplayControls();
-    void startReplayAt(from, cell.id);
-  },
-});
-registerWidgetAction({
-  id: 'omega-context-open-replay',
-  target: 'context:body',
-  label: 'Open Replay',
-  icon: 'omega-context-replay-panel',
-  order: 124,
-  run: () => openReplayControls(),
+  getTheme: () => currentTheme,
+  setTheme,
+  openReplayControls,
+  startReplayAt,
 });
 
 const bottomClock = document.getElementById('bottom-clock');
