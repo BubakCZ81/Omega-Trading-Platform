@@ -45,6 +45,7 @@ import { initializeTradingAccounts } from './tradingAccounts';
 import { initializeChartSettingsActions } from './chartSettingsActions';
 import { initializeChartContextActions } from './chartContextActions';
 import { registerChartRendererSettings } from './chartRendererSettings';
+import { initializeToolbarDropdowns } from './toolbarDropdowns';
 // createWindow will be loaded lazily inside openTauriStandaloneEditor
 
 const startupScreen = document.getElementById('omega-startup-screen');
@@ -641,6 +642,7 @@ if (!pineEngine) {
 }
 // ---------------------------------------------------------------------------
 const { sync: syncChartControls } = initializeChartTimeframeControls(workspace);
+initializeToolbarDropdowns();
 
 const marketChangeListeners = new Map<string, () => void>();
 function watchCellMarketChanges(cellId: string) {
