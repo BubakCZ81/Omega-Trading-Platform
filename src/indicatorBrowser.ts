@@ -1,5 +1,6 @@
 import { registerWidgetAction, type WidgetContext } from '@luxalgo/vela/widget';
 import { appAssetUrl } from './appPaths';
+import { buildIndicatorCategoryList } from './indicatorCategories';
 
 interface CatalogIndicator {
   name: string;
@@ -239,10 +240,10 @@ function renderSidebar(): void {
   const sidebar = document.getElementById('indicator-browser-categories');
   if (!sidebar) return;
   sidebar.replaceChildren();
-	const categories = ['Discover', 'Favorites', 'My Scripts', 'All scripts', 'Built-in', ...new Set([
+	const categories = buildIndicatorCategoryList([
 	  ...catalog.flatMap(item => [item.category ?? 'Other', ...(item.collections ?? [])]),
 	  ...items.filter((item): item is Extract<BrowserItem, { kind: 'native' }> => item.kind === 'native').map(item => item.group),
-	])];
+	]);
   for (const category of categories) {
 	const button = makeElement('button', `indicator-category${activeCategory === category ? ' active' : ''}`, category);
 	button.type = 'button';
