@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+:root {
+  --omega-bg:#0d1420;
+  --omega-surface:#151f2c;
+  --omega-elevated:#202d3c;
+  --omega-text:#e6edf5;
+  --omega-muted:#a7b5c5;
+  --omega-border:#37475a;
+  --omega-accent:#55a6ff;
+  --omega-accent-hover:#82bdff;
+  --omega-button-accent:#52d1bd;
+  --omega-button-accent-hover:#72dfce;
+  --omega-button-accent-contrast:#0d1420;
+  --omega-button-hover:#263a46;
+  --omega-error:#ff6577;
+  --omega-success:#39c995;
+  --app-bg:var(--omega-bg);
+  --app-text:var(--omega-text);
+  --app-border:var(--omega-border);
+  --surface-2:var(--omega-surface);
+  --muted-text:var(--omega-muted);
+}
+:root, body, #visual-backtest-app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { color: var(--omega-text); background: var(--omega-bg); font-family: "Segoe UI", system-ui, sans-serif; }
+body :is(button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]) { font-weight:600 !important; }
+.omega-backtest-root { background-color: var(--omega-bg); }
+.omega-backtest-chart { background: var(--omega-bg); }
+.omega-backtest-loading { display: grid; place-items: center; width: 100%; height: 100%; color: var(--omega-muted); font-size: 0.875rem; }
+
+/* The backtester used 9–11px labels and 12px controls, which were difficult to
+   read at common desktop scaling. Keep Tailwind's responsive layouts while
+   raising each text tier by at least 3 CSS pixels. */
+#visual-backtest-app [class~="text-[9px]"] { font-size: 0.75rem !important; }
+#visual-backtest-app [class~="text-[10px]"] { font-size: 0.8125rem !important; }
+#visual-backtest-app [class~="text-[11px]"] { font-size: 0.875rem !important; }
+#visual-backtest-app [class~="text-xs"] { font-size: 0.9375rem !important; }
+#visual-backtest-app [class~="text-sm"] { font-size: 1.0625rem !important; }
+#visual-backtest-app .omega-backtest-loading { font-size: 1.0625rem; }
+
+body[data-theme="light"] {
+  --omega-bg:#e8edf3;
+  --omega-surface:#f7f9fc;
+  --omega-elevated:#ffffff;
+  --omega-text:#1d2938;
+  --omega-muted:#526174;
+  --omega-border:#c5d0dc;
+  --omega-accent:#176bc1;
+  --omega-accent-hover:#10569f;
+  --omega-button-accent:#126b63;
+  --omega-button-accent-hover:#0e5a54;
+  --omega-button-accent-contrast:#ffffff;
+  --omega-button-hover:#e2efee;
+  --omega-error:#b42336;
+  --omega-success:#14734e;
+  color:var(--omega-text);
+  background:var(--omega-bg);
+}
+body[data-theme="dark"][data-theme-variant="solarized-dark"] {
+  --omega-bg:#002b36; --omega-surface:#073642; --omega-elevated:#174853;
+  --omega-text:#eee8d5; --omega-muted:#93a1a1; --omega-border:#586e75;
+  --omega-accent:#268bd2; --omega-accent-hover:#2aa198;
+  --omega-button-accent:#859900; --omega-button-accent-hover:#6f8100;
+  --omega-button-accent-contrast:#002b36; --omega-button-hover:#174853;
+  --omega-error:#ff6577; --omega-success:#859900;
+  color:var(--omega-text); background:var(--omega-bg);
+}
+body[data-theme="light"][data-theme-variant="solarized-light"] {
+  --omega-bg:#fdf6e3; --omega-surface:#eee8d5; --omega-elevated:#fffaed;
+  --omega-text:#073642; --omega-muted:#586e75; --omega-border:#93a1a1;
+  --omega-accent:#268bd2; --omega-accent-hover:#006f9b;
+  --omega-button-accent:#586e00; --omega-button-accent-hover:#435400;
+  --omega-button-accent-contrast:#fdf6e3; --omega-button-hover:#e2d9c5;
+  --omega-error:#b42336; --omega-success:#586e00;
+  color:var(--omega-text); background:var(--omega-bg);
+}
+#visual-backtest-app { color:var(--omega-text); }
+#visual-backtest-app .bg-slate-950 { background-color:var(--omega-bg); }
+#visual-backtest-app .bg-slate-900 { background-color:var(--omega-surface); }
+#visual-backtest-app .bg-slate-800 { background-color:var(--omega-elevated); }
+#visual-backtest-app [class~="bg-slate-950/30"] { background-color:color-mix(in srgb, var(--omega-bg) 30%, transparent); }
+#visual-backtest-app [class~="bg-slate-950/40"] { background-color:color-mix(in srgb, var(--omega-bg) 40%, transparent); }
+#visual-backtest-app [class~="bg-slate-950/50"] { background-color:color-mix(in srgb, var(--omega-bg) 50%, transparent); }
+#visual-backtest-app [class~="bg-slate-950/60"] { background-color:color-mix(in srgb, var(--omega-bg) 60%, transparent); }
+#visual-backtest-app [class~="bg-slate-950/70"] { background-color:color-mix(in srgb, var(--omega-bg) 70%, transparent); }
+#visual-backtest-app [class~="bg-slate-900/90"] { background-color:color-mix(in srgb, var(--omega-surface) 90%, transparent); }
+#visual-backtest-app [class~="bg-slate-900/95"] { background-color:color-mix(in srgb, var(--omega-surface) 95%, transparent); }
+#visual-backtest-app .border-slate-700,
+#visual-backtest-app .border-slate-600,
+#visual-backtest-app .border-slate-400 { border-color:var(--omega-border); }
+#visual-backtest-app .text-slate-100,
+#visual-backtest-app .text-slate-200,
+#visual-backtest-app .text-slate-300 { color:var(--omega-text); }
+#visual-backtest-app .text-slate-400,
+#visual-backtest-app .text-slate-500 { color:var(--omega-muted); }
+#visual-backtest-app [class~="bg-blue-500/10"],
+#visual-backtest-app [class~="bg-blue-500/15"] { background-color:color-mix(in srgb, var(--omega-accent) 15%, var(--omega-elevated)); }
+#visual-backtest-app .bg-blue-600 { background-color:var(--omega-button-accent); }
+#visual-backtest-app .hover\:bg-blue-500:hover { background-color:var(--omega-button-accent-hover); }
+#visual-backtest-app .bg-blue-600.text-white { color:var(--omega-button-accent-contrast); }
+#visual-backtest-app .text-blue-200,
+#visual-backtest-app .text-blue-300 { color:var(--omega-accent); }
+#visual-backtest-app [class~="border-blue-400/30"] { border-color:color-mix(in srgb, var(--omega-accent) 50%, var(--omega-border)); }
+#visual-backtest-app .hover\:bg-slate-700:hover,
+#visual-backtest-app .hover\:bg-slate-800:hover { background-color:var(--omega-button-hover); }
+#visual-backtest-app input:not([type="checkbox"]):not([type="range"]),
+#visual-backtest-app select {
+  color:var(--omega-text);
+  background-color:var(--omega-elevated);
+  border-color:var(--omega-border);
+}
+#visual-backtest-app select option { color:var(--omega-text); background-color:var(--omega-elevated); }
+#visual-backtest-app input[type="checkbox"],
+#visual-backtest-app input[type="range"] { accent-color:var(--omega-button-accent); }
+#visual-backtest-app :focus-visible { outline:0.125rem solid var(--omega-accent); outline-offset:0.125rem; }
+body[data-theme="light"] #visual-backtest-app .text-white { color:var(--omega-text); }
+body[data-theme="light"] #visual-backtest-app .bg-blue-600.text-white { color:var(--omega-button-accent-contrast); }
+body[data-theme="light"] #visual-backtest-app .bg-rose-950\/50 { background-color:color-mix(in srgb, var(--omega-error) 12%, var(--omega-surface)); }
+body[data-theme="light"] #visual-backtest-app .text-rose-200 { color:var(--omega-error); }
+body[data-theme="light"] #visual-backtest-app .border-rose-800 { border-color:color-mix(in srgb, var(--omega-error) 55%, var(--omega-border)); }
+body[data-theme="light"] #visual-backtest-app .bg-emerald-950\/30 { background-color:color-mix(in srgb, var(--omega-success) 12%, var(--omega-surface)); }
+body[data-theme="light"] #visual-backtest-app .text-emerald-200 { color:var(--omega-success); }
+body[data-theme="light"] #visual-backtest-app .border-emerald-800\/60 { border-color:color-mix(in srgb, var(--omega-success) 45%, var(--omega-border)); }
+body[data-theme="light"] #visual-backtest-app .timeframe-category {
+  background: var(--omega-elevated);
+  border-color: var(--omega-border);
+  box-shadow: 0 0.125rem 0.375rem rgb(15 23 42 / 8%);
+}
+body[data-theme="light"] #visual-backtest-app .timeframe-category--heikin {
+  background: #f5f0ff;
+  border-color: #b8a3dc;
+}
+body[data-theme="light"] #visual-backtest-app .timeframe-category--heikin [class~="text-violet-100"] { color: #3d2d5e; }
+body[data-theme="light"] #visual-backtest-app .timeframe-category--heikin [class~="text-violet-200/60"] { color: #675482; }
+body[data-theme="light"] #visual-backtest-app .timeframe-category--heikin [class~="text-violet-200"] { color: #513b75; }
+body[data-theme="light"] #visual-backtest-app .timeframe-category--heikin button:not([aria-pressed="true"]) {
+  background: #ffffff;
+  border-color: #b8a3dc;
+  color: #3d2d5e;
+}
+body[data-theme="light"] #visual-backtest-app .timeframe-category--heikin button:not([aria-pressed="true"]):hover {
+  background: #ece4fb;
+  border-color: #8c6dc4;
+}

@@ -1,0 +1,32 @@
+//@version=6
+strategy("Dual EMA Crossover Strategy", overlay = true, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.05)
+
+fastLength = input.int(9, "Fast EMA Length", minval = 1)
+slowLength = input.int(21, "Slow EMA Length", minval = 1)
+useStopLoss = input.bool(true, "Use ATR Stop Loss")
+atrLength = input.int(14, "ATR Length")
+atrMultiplier = input.float(1.5, "ATR Multiplier")
+
+fastEma = ta.ema(close, fastLength)
+slowEma = ta.ema(close, slowLength)
+atrValue = ta.atr(atrLength)
+
+longCondition = ta.crossover(fastEma, slowEma)
+shortCondition = ta.crossunder(fastEma, slowEma)
+
+if (longCondition)
+    strategy.entry("Long", strategy.long)
+    if (useStopLoss)
+        stopPrice = close - (atrValue * atrMultiplier)
+        targetPrice = close + (atrValue * atrMultiplier * 2.0)
+        strategy.exit("Long Exit", "Long", stop = stopPrice, limit = targetPrice)
+
+if (shortCondition)
+    strategy.entry("Short", strategy.short)
+    if (useStopLoss)
+        stopPrice = close + (atrValue * atrMultiplier)
+        targetPrice = close - (atrValue * atrMultiplier * 2.0)
+        strategy.exit("Short Exit", "Short", stop = stopPrice, limit = targetPrice)
+
+plot(fastEma, "Fast EMA", color = color.blue, linewidth = 2)
+plot(slowEma, "Slow EMA", color = color.orange, linewidth = 2)

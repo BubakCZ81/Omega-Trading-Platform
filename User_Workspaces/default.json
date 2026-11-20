@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "layout": "1",
+  "activeCellId": "primary",
+  "panels": {
+    "open": "omega-trading-panel",
+    "widths": {
+      "omega-trading-panel": 340
+    }
+  },
+  "charts": [
+    {
+      "id": "primary",
+      "symbol": "binance:BTCUSDT",
+      "timeframe": "60",
+      "priceStyle": "candles",
+      "bars": 500
+    }
+  ],
+  "ext": {
+    "omega.workspaceProfile": {
+      "name": "default"
+    },
+    "omega.chartPreferences": {
+      "theme": "solarized-dark"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+//@version=6
+strategy("MACD Breakout Strategy", overlay = true, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.05)
+
+fastLen = input.int(12, "Fast Length")
+slowLen = input.int(26, "Slow Length")
+sigLen = input.int(9, "Signal Length")
+emaTrendFilter = input.bool(true, "Use 200 EMA Filter")
+
+[macdLine, signalLine, histLine] = ta.macd(close, fastLen, slowLen, sigLen)
+trendEma = ta.ema(close, 200)
+
+longCondition = ta.crossover(macdLine, signalLine) and (not emaTrendFilter or close > trendEma)
+shortCondition = ta.crossunder(macdLine, signalLine) and (not emaTrendFilter or close < trendEma)
+
+if (longCondition)
+    strategy.entry("MACD Long", strategy.long)
+
+if (shortCondition)
+    strategy.entry("MACD Short", strategy.short)
+
+plot(trendEma, "200 EMA", color = color.yellow, linewidth = 2)

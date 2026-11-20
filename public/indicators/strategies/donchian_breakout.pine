@@ -1,0 +1,27 @@
+//@version=6
+strategy("Donchian Channel Turtle Breakout", overlay = true, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.05)
+
+entryPeriod = input.int(20, "Entry Breakout Period")
+exitPeriod = input.int(10, "Exit Lookback Period")
+
+upperEntry = ta.highest(high, entryPeriod)[1]
+lowerEntry = ta.lowest(low, entryPeriod)[1]
+upperExit = ta.highest(high, exitPeriod)[1]
+lowerExit = ta.lowest(low, exitPeriod)[1]
+
+if (ta.crossover(close, upperEntry))
+    strategy.entry("Turtle Long", strategy.long)
+
+if (ta.crossunder(close, lowerEntry))
+    strategy.entry("Turtle Short", strategy.short)
+
+if (strategy.position_size > 0 and ta.crossunder(close, lowerExit))
+    strategy.close("Turtle Long", comment = "Exit Long")
+
+if (strategy.position_size < 0 and ta.crossover(close, upperExit))
+    strategy.close("Turtle Short", comment = "Exit Short")
+
+plot(upperEntry, "Upper Breakout", color = color.blue)
+plot(lowerEntry, "Lower Breakout", color = color.red)
+plot(upperExit, "Upper Exit", color = color.blue, style = plot.style_linebr)
+plot(lowerExit, "Lower Exit", color = color.red, style = plot.style_linebr)

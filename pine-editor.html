@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Omega Pine Editor</title>
+    <style>
+      html, body { width: 100%; height: 100%; margin: 0; background: var(--omega-bg, #0d1420); }
+      #pine-editor-loading {
+        position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: center;
+        color: var(--omega-text, #e6edf5); background: var(--omega-bg, #0d1420); font: 14px/1.5 "Segoe UI", sans-serif;
+      }
+      #pine-editor-loading[hidden] { display: none; }
+      .pine-editor-loading-card { display: grid; justify-items: center; gap: 14px; padding: 28px; text-align: center; }
+      .pine-editor-loading-spinner {
+        width: 28px; height: 28px; border: 3px solid var(--omega-border, #37475a); border-top-color: var(--omega-accent, #55a6ff);
+        border-radius: 50%; animation: pine-editor-spin .8s linear infinite;
+      }
+      #pine-editor-load-error { max-width: 24rem; color: var(--omega-error, #ff6577); }
+      #pine-editor-retry {
+        padding: 7px 14px; color: var(--omega-text, #e6edf5); background: var(--omega-elevated, #202d3c);
+        border: 1px solid var(--omega-border, #37475a); border-radius: 5px; font: inherit; cursor: pointer;
+      }
+      #pine-editor-retry:hover, #pine-editor-retry:focus-visible { border-color: var(--omega-button-accent, #52d1bd); }
+      html[data-theme="light"] #pine-editor-loading { color: #1d2938; background: #e8edf3; }
+      html[data-theme="light"] .pine-editor-loading-spinner { border-color: #c5d0dc; border-top-color: #176bc1; }
+      html[data-theme="light"] #pine-editor-load-error { color: #b42336; }
+      html[data-theme="light"] #pine-editor-retry { color: #1d2938; background: #ffffff; border-color: #c5d0dc; }
+      html[data-theme="light"] #pine-editor-retry:hover,
+      html[data-theme="light"] #pine-editor-retry:focus-visible { border-color: #126b63; }
+      @keyframes pine-editor-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .pine-editor-loading-spinner { animation-duration: 2s; } }
+    </style>
+    <script>
+      try {
+        const theme = localStorage.getItem('omega:theme');
+        if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
+      } catch (error) {
+        console.error('Could not read the saved Pine Editor theme:', error);
+      }
+      const finishPineEditorLoading = () => {
+        document.getElementById('pine-editor-app')?.setAttribute('aria-busy', 'false');
+        document.getElementById('pine-editor-loading')?.setAttribute('hidden', '');
+      };
+      const showPineEditorLoadError = () => {
+        const status = document.getElementById('pine-editor-load-error');
+        if (!status) return;
+        status.hidden = false;
+        document.querySelector('.pine-editor-loading-spinner')?.setAttribute('hidden', '');
+        document.getElementById('pine-editor-retry')?.removeAttribute('hidden');
+      };
+      window.addEventListener('omega:pine-editor:ready', finishPineEditorLoading, { once: true });
+      window.addEventListener('error', showPineEditorLoadError);
+      window.addEventListener('unhandledrejection', showPineEditorLoadError);
+      window.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('pine-editor-retry')?.addEventListener('click', () => location.reload());
+      }, { once: true });
+    </script>
+  </head>
+  <body>
+    <div id="pine-editor-loading" role="status" aria-live="polite">
+      <div class="pine-editor-loading-card">
+        <div class="pine-editor-loading-spinner" aria-hidden="true"></div>
+        <strong>Preparing Pine Editor…</strong>
+        <span id="pine-editor-load-error" hidden>Could not start the Pine Editor. Reload to try again.</span>
+        <button id="pine-editor-retry" type="button" hidden>Reload editor</button>
+      </div>
+    </div>
+    <main id="pine-editor-app" class="pine-editor-window" aria-busy="true">
+      <header class="pine-editor-toolbar">
+        <div class="pine-editor-toolbar-group">
+          <strong id="pine-editor-title">OMEGA PINE EDITOR <span>(v6)</span></strong>
+          <select id="script-select" aria-label="Pine script"></select>
+          <button id="new-script" type="button">New</button>
+          <button id="save-script" type="button">Save</button>
+          <button id="delete-script" type="button">Delete</button>
+          <button id="export-script" type="button">Export</button>
+          <div class="pine-editor-chart-actions">
+            <button id="add-to-chart" type="button">Add to chart</button>
+            <button id="update-chart" type="button">Update chart</button>
+            <span class="pine-editor-toolbar-separator--thick" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="pine-editor-toolbar-group pine-editor-actions">
+          <button id="btn-ai-assistant" type="button" aria-expanded="false" aria-controls="pine-ai-assistant">AI Assistant</button>
+          <button id="btn-pine-reference" type="button" aria-expanded="true" aria-controls="pine-reference">Pine docs</button>
+          <button id="upgrade-to-v6" type="button" title="Convert the current Pine script to version 6">Upgrade to v6</button>
+        </div>
+      </header>
+      <section class="pine-editor-content">
+        <div id="code-editor" aria-label="Pine code editor"></div>
+        <div id="pine-ai-resize" role="separator" aria-orientation="vertical" aria-label="Resize AI assistant" tabindex="0" hidden></div>
+        <aside id="pine-ai-assistant" aria-label="Pine AI assistant" hidden>
+          <div class="pine-ai-heading">
+            <div>
+              <strong>Pine AI</strong>
+              <span id="pine-ai-model-status" class="pine-ai-model-status" role="status">Select a provider and model</span>
+              <p id="pine-ai-conversation-title" class="pine-ai-visually-hidden">New conversation</p>
+            </div>
+            <div class="pine-ai-toolbar">
+              <button id="pine-ai-new" class="btn" type="button" title="Start a new conversation">New</button>
+              <button id="pine-ai-history-toggle" class="btn" type="button" aria-expanded="true" aria-controls="pine-ai-history" title="Show saved conversations">Chats</button>
+              <details id="pine-ai-settings">
+                <summary class="btn" title="AI provider and model settings">Settings</summary>
+                <div class="pine-ai-settings-panel">
+                  <div class="pine-ai-row">
+                    <label class="pine-ai-field" for="pine-ai-provider">Provider
+                      <select id="pine-ai-provider">
+                        <option value="local">Local OpenAI-compatible API</option>
+                        <option value="gemini">Google Gemini</option>
+                        <option value="groq">Groq</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="anthropic">Anthropic Claude</option>
+                        <option value="cohere">Cohere</option>
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="mistral">Mistral AI</option>
+                        <option value="together">Together AI</option>
+                        <option value="zai">Z.AI GLM (China)</option>
+                        <option value="siliconflow">SiliconFlow (China)</option>
+                        <option value="sambanova">SambaNova Cloud</option>
+                      </select>
+                    </label>
+                    <label class="pine-ai-field" for="pine-ai-model">Model
+                      <select id="pine-ai-model" aria-label="AI model"></select>
+                    </label>
+                  </div>
+                  <div id="pine-ai-cloud-settings">
+                    <label class="pine-ai-field" for="pine-ai-key">API key
+                      <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
+                    </label>
+                    <div class="pine-ai-row">
+                      <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
+                      <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                    </div>
+                    <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
+                  </div>
+                  <div id="pine-ai-local-settings" hidden>
+                    <label class="pine-ai-field" for="pine-ai-local-preset">Local AI program
+                      <select id="pine-ai-local-preset" aria-label="Local AI program">
+                        <option value="custom">Custom OpenAI-compatible endpoint</option>
+                        <option value="cherry">Cherry Studio Gateway</option>
+                        <option value="lmstudio">LM Studio</option>
+                        <option value="atomic">Atomic Chat</option>
+                        <option value="koboldcpp">KoboldCpp</option>
+                        <option value="msty">Msty Nexus</option>
+                        <option value="ollama">Ollama OpenAI-compatible API</option>
+                      </select>
+                    </label>
+                    <label class="pine-ai-field" for="pine-ai-local-url">Local API base URL
+                      <input id="pine-ai-local-url" type="url" spellcheck="false" maxlength="500" placeholder="http://127.0.0.1:1234/v1">
+                    </label>
+                    <small>Select Ollama above, then edit this URL to use a custom localhost port. Installed models refresh automatically.</small>
+                    <label class="pine-ai-field" for="pine-ai-local-key">Optional local API key
+                      <input id="pine-ai-local-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Optional; encrypted if saved">
+                    </label>
+                    <label class="pine-ai-field" for="pine-ai-local-model-search">Search models
+                      <input id="pine-ai-local-model-search" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by model name or ID">
+                    </label>
+                    <label class="pine-ai-field" for="pine-ai-local-model">Model ID
+                      <select id="pine-ai-local-model" aria-label="Local model"></select>
+                    </label>
+                    <span id="pine-ai-ollama-status" class="pine-ai-model-status" role="status" hidden></span>
+                    <div class="pine-ai-row">
+                      <button id="pine-ai-test-local" class="btn" type="button">Test endpoint &amp; load models</button>
+                      <button id="pine-ai-save-local" class="btn" type="button">Save local settings</button>
+                    </div>
+                    <button id="pine-ai-unload-model" class="btn" type="button" disabled>Unload Ollama model</button>
+                    <button id="pine-ai-clear-local-key" class="btn" type="button">Remove saved local API key</button>
+                    <small>Localhost only. Prompts go directly to your local server; LuxAlgo research is separate and optional.</small>
+                  </div>
+                      <details class="pine-ai-llama-details">
+                        <summary class="btn">Built-in llama.cpp model loading</summary>
+                        <section id="pine-ai-llama-controls" class="pine-ai-llama-controls" aria-label="Built-in llama.cpp models">
+                        <strong>Built-in llama.cpp · GGUF</strong>
+                        <div class="pine-ai-row">
+                          <label class="pine-ai-field" for="pine-ai-llama-directory">Model folder
+                            <span id="pine-ai-llama-directory" class="pine-ai-model-status" role="status">Loading model folder…</span>
+                          </label>
+                          <button id="pine-ai-llama-browse" class="btn" type="button">Browse</button>
+                        </div>
+                        <label class="pine-ai-field" for="pine-ai-llama-chat-model">Chat AI
+                          <select id="pine-ai-llama-chat-model" aria-label="GGUF model for Chat AI"></select>
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-llama-chat-load" class="btn" type="button">Load Chat AI</button>
+                          <button id="pine-ai-llama-chat-stop" class="btn" type="button">Stop Chat AI</button>
+                        </div>
+                        <span id="pine-ai-llama-chat-status" class="pine-ai-model-status" role="status">Chat AI model not loaded</span>
+                        <label class="pine-ai-field" for="pine-ai-llama-inline-model">Inline AI
+                          <select id="pine-ai-llama-inline-model" aria-label="GGUF model for Inline AI"></select>
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-llama-inline-load" class="btn" type="button">Load Inline AI</button>
+                          <button id="pine-ai-llama-inline-stop" class="btn" type="button">Stop Inline AI</button>
+                        </div>
+                        <span id="pine-ai-llama-inline-status" class="pine-ai-model-status" role="status">Inline AI model not loaded</span>
+                        </section>
+                      </details>
+                </div>
+              </details>
+              <button id="pine-ai-close" class="btn" type="button" aria-label="Close AI assistant">Close</button>
+            </div>
+          </div>
+          <div id="pine-ai-workspace">
+            <aside id="pine-ai-history" data-panel-id="pine-ai-history" aria-label="Saved conversations" tabindex="-1"></aside>
+            <div id="pine-ai-chat" role="log" aria-live="polite" aria-label="Conversation messages"></div>
+          </div>
+          <p id="pine-ai-status" role="status" aria-live="polite"></p>
+          <details id="pine-ai-options">
+            <summary class="btn" title="Optional AI features">More</summary>
+            <div class="pine-ai-options-panel">
+              <label id="pine-ai-luxalgo-option" title="Search the public, read-only LuxAlgo Library over MCP and include the results with your prompt">
+                <input id="pine-ai-luxalgo-enabled" type="checkbox">
+                Library research
+              </label>
+              <label id="pine-ai-edit-option" title="Allow the assistant to apply code blocks to the Pine editor">
+                <input id="pine-ai-allow-edit" type="checkbox">
+                Apply code
+              </label>
+              <label id="pine-ai-inline-option" title="Show AI code completions inline while you type">
+                <input id="pine-ai-inline-enabled" type="checkbox">
+                Inline suggestions
+              </label>
+            </div>
+          </details>
+          <div id="pine-ai-composer">
+            <textarea id="pine-ai-prompt" maxlength="4000" aria-label="Message" placeholder="Ask about the current Pine script…"></textarea>
+            <button id="pine-ai-ask" class="btn btn-primary" type="button">Send</button>
+            <button id="pine-ai-stop" class="btn" type="button" hidden>Stop</button>
+          </div>
+        </aside>
+        <div id="pine-reference-resize" role="separator" aria-label="Resize Pine documentation panel"
+          aria-orientation="vertical" aria-valuemin="250" aria-valuenow="320" aria-keyshortcuts="ArrowLeft ArrowRight"
+          tabindex="0" title="Drag to resize Pine documentation"></div>
+        <aside id="pine-reference" aria-label="Pine method documentation">
+          <div class="pine-reference-heading">
+            <strong>Pine documentation</strong>
+          </div>
+          <input id="pine-reference-search" type="search" placeholder="Search Pine methods…" aria-label="Search Pine methods" />
+          <div id="pine-reference-list"></div>
+        </aside>
+      </section>
+      <div class="standalone-console-edge">
+        <div id="standalone-console-divider" role="separator" aria-orientation="horizontal"
+          aria-label="Resize Pine console" aria-valuemin="90" aria-valuenow="190" tabindex="0"></div>
+        <button id="console-toggle" class="standalone-console-toggle" type="button" aria-expanded="true"
+          aria-controls="standalone-console-panel" aria-label="Show or hide the Pine console"
+          title="Show or hide the Pine console">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.6"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 15 6-6 6 6" />
+          </svg>
+        </button>
+      </div>
+      <section id="standalone-console-panel" aria-label="Pine console">
+        <header class="standalone-console-header">
+          <strong>PINE CONSOLE</strong>
+          <button id="clear-console" type="button">Clear all</button>
+        </header>
+        <div class="standalone-console-split">
+          <section class="standalone-console-section" aria-labelledby="standalone-errors-title">
+            <header>
+              <span id="standalone-errors-title">Pine errors</span>
+              <button class="console-btn" id="clear-errors" type="button">Clear</button>
+            </header>
+            <div id="standalone-console-errors" role="log" aria-live="polite" aria-label="Pine errors"></div>
+          </section>
+          <section class="standalone-console-section" aria-labelledby="standalone-actions-title">
+            <header>
+              <span id="standalone-actions-title">Actions</span>
+              <button class="console-btn" id="clear-actions" type="button">Clear</button>
+            </header>
+            <div id="standalone-console-actions" role="log" aria-live="polite" aria-label="Pine editor actions"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./src/pineEditorBootstrap.ts"></script>
+  </body>
+</html>

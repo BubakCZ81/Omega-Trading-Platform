@@ -1,0 +1,33 @@
+//@version=6
+strategy("RSI + Bollinger Mean Reversion", overlay = true, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.05)
+
+bbLength = input.int(20, "BB Length")
+bbMult = input.float(2.0, "BB StdDev")
+rsiLength = input.int(14, "RSI Length")
+rsiOversold = input.int(30, "RSI Oversold Level")
+rsiOverbought = input.int(70, "RSI Overbought Level")
+
+basis = ta.sma(close, bbLength)
+dev = bbMult * ta.stdev(close, bbLength)
+upperBand = basis + dev
+lowerBand = basis - dev
+rsiVal = ta.rsi(close, rsiLength)
+
+longSignal = close < lowerBand and rsiVal < rsiOversold
+shortSignal = close > upperBand and rsiVal > rsiOverbought
+
+if (longSignal)
+    strategy.entry("Long", strategy.long)
+
+if (shortSignal)
+    strategy.entry("Short", strategy.short)
+
+if (strategy.position_size > 0 and close >= basis)
+    strategy.close("Long", comment = "Take Profit at Basis")
+
+if (strategy.position_size < 0 and close <= basis)
+    strategy.close("Short", comment = "Take Profit at Basis")
+
+plot(upperBand, "Upper BB", color = color.red)
+plot(basis, "Basis", color = color.gray)
+plot(lowerBand, "Lower BB", color = color.green)

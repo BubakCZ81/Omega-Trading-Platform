@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Omega Trading Terminal — RC_updated v0.1</title>
+    <style>
+      #omega-startup-screen {
+        position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: center;
+        overflow: hidden; color: #edf4ff; background:
+          radial-gradient(ellipse at 50% 42%, rgba(25, 70, 133, .24), transparent 46%),
+          linear-gradient(145deg, #07101e 0%, #0b1423 54%, #080e18 100%);
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+        opacity: 1; transition: opacity 260ms ease, visibility 260ms ease;
+      }
+      #omega-startup-screen[data-state="leaving"] { opacity: 0; visibility: hidden; pointer-events: none; }
+      .omega-startup-card { width: min(390px, calc(100vw - 48px)); text-align: center; }
+      .omega-startup-mark {
+        width: 66px; height: 66px; margin: 0 auto 22px; display: grid; place-items: center;
+        color: white; border: 1px solid rgba(143, 190, 255, .45); border-radius: 20px;
+        background: linear-gradient(145deg, #2474ea, #1646a5 58%, #102b62);
+        box-shadow: 0 14px 48px rgba(37, 112, 235, .28), inset 0 1px rgba(255,255,255,.3);
+        font: 700 33px/1 Georgia, serif;
+      }
+      .omega-startup-brand { margin: 0; font-size: 18px; font-weight: 750; letter-spacing: .22em; }
+      .omega-startup-caption { margin: 8px 0 26px; color: #93a6c1; font-size: 12px; letter-spacing: .04em; }
+      .omega-startup-track { height: 3px; overflow: hidden; border-radius: 5px; background: rgba(164, 190, 224, .15); }
+      .omega-startup-progress {
+        width: 38%; height: 100%; border-radius: inherit;
+        background: linear-gradient(90deg, #3985ff, #87bdff);
+        box-shadow: 0 0 13px rgba(73, 145, 255, .75);
+        animation: omega-startup-load 1.45s cubic-bezier(.35,0,.25,1) infinite;
+      }
+      .omega-startup-status { min-height: 18px; margin: 13px 0 0; color: #a9bad2; font-size: 11px; }
+      .omega-startup-status[data-state="error"] { color: #ff9d9d; }
+      .omega-startup-retry { margin-top: 15px; padding: 7px 14px; color: #edf4ff; border: 1px solid #456995; border-radius: 6px; background: #13253d; cursor: pointer; }
+      .omega-startup-retry[hidden] { display: none; }
+      @keyframes omega-startup-load { from { transform: translateX(-115%); } to { transform: translateX(285%); } }
+      @media (prefers-reduced-motion: reduce) {
+        .omega-startup-progress { animation-duration: 3s; }
+        #omega-startup-screen { transition-duration: 0ms; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="omega-startup-screen" role="status" aria-live="polite" aria-label="Starting Omega trading platform">
+      <div class="omega-startup-card">
+        <div class="omega-startup-mark" aria-hidden="true">Ω</div>
+        <p class="omega-startup-brand">OMEGA</p>
+        <p class="omega-startup-caption">TRADING TERMINAL</p>
+        <div class="omega-startup-track" aria-hidden="true"><div class="omega-startup-progress"></div></div>
+        <p id="omega-startup-status" class="omega-startup-status">Preparing your trading workspace…</p>
+        <button id="omega-startup-retry" class="omega-startup-retry" type="button" hidden>Reload platform</button>
+      </div>
+    </div>
+
+    <!-- Modal for New Script -->
+    <div id="new-script-modal" data-panel-id="new-script">
+      <div class="modal-card">
+        <h3 class="modal-title">Create New Pine Script</h3>
+        <input id="modal-script-name" type="text" class="modal-input" placeholder="e.g. My EMA Strategy" />
+        <label class="modal-field" for="modal-script-category">Category</label>
+        <select id="modal-script-category" class="modal-input"></select>
+        <div id="modal-new-category-field" hidden>
+          <label class="modal-field" for="modal-new-category">New category name</label>
+          <input id="modal-new-category" type="text" class="modal-input" maxlength="60" placeholder="e.g. Scalping setups" />
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <button id="modal-cancel-btn" class="btn">Cancel</button>
+          <button id="modal-confirm-btn" class="btn btn-primary">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="app-container">
+      <!-- 1. Chart Viewport -->
+      <div id="chart-wrapper">
+
+        <!-- Top Toolbar: Timeframe -->
+        <div id="top-toolbar">
+          <div class="toolbar-control-zone" aria-label="Chart controls">
+          <div class="dock-pill">
+            <input id="workspace-profile-name" class="chart-toolbar-input" type="text" placeholder="Workspace name" aria-label="Workspace profile name" />
+            <button id="workspace-save-profile" class="chart-toolbar-input" type="button">Save</button>
+            <button id="workspace-load-profile" class="chart-toolbar-input" type="button">Load</button>
+          </div>
+          <div class="dock-pill">
+            <details id="ctrader-timeframe-menu" class="timeframe-menu ctrader-timeframe-menu">
+              <summary aria-label="Chart timeframe. Choose a period or chart view.">Timeframe</summary>
+              <div class="ctrader-timeframe-content" role="menu" aria-label="Chart period and view">
+                <div id="ctrader-timeframe-grid" class="ctrader-timeframe-grid"></div>
+                <small id="timeframe-help" class="ctrader-timeframe-help" aria-live="polite"></small>
+              </div>
+            </details>
+            <!-- Compatibility controls keep existing workspace state wiring intact -->
+            <span hidden>
+              <details id="custom-timeframe-menu"><summary>Custom</summary></details>
+              <input id="custom-timeframe-value" value="3"><select id="custom-timeframe-unit"><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option><option value="ticks">Ticks</option><option value="renko">Renko pips</option><option value="atr-renko">ATR Renko (600 × 1m)</option><option value="range">Range pips</option></select>
+              <button id="apply-custom-timeframe" type="button">Apply</button>
+            </span>
+          </div>
+          <div class="dock-pill">
+            <label for="chart-layout-select">Layout:</label>
+            <select id="chart-layout-select" class="chart-toolbar-input" aria-label="Chart layout">
+              <option value="1">1 chart</option>
+              <option value="2h">2 side by side</option>
+              <option value="2v">2 stacked</option>
+              <option value="4">4 charts</option>
+              <option value="g2x3">6 charts (3 × 2)</option>
+              <option value="8">8 charts (4 × 2)</option>
+            </select>
+          </div>
+          <div class="dock-pill">
+            <label for="chart-group-color">Group:</label>
+            <select id="chart-group-color" class="chart-toolbar-input" aria-label="Active chart color group">
+              <option value="">None</option>
+              <option value="red">Red</option>
+              <option value="blue">Blue</option>
+              <option value="green">Green</option>
+              <option value="yellow">Yellow</option>
+              <option value="purple">Purple</option>
+            </select>
+            <span id="chart-group-indicator" title="Active chart color group" aria-hidden="true"></span>
+          </div>
+          <div class="dock-pill">
+            <details id="theme-menu" class="timeframe-menu theme-menu">
+              <summary aria-label="Choose the platform colour theme">Theme</summary>
+              <div class="theme-menu-content" role="menu" aria-label="Platform colour theme">
+                <button type="button" role="menuitemradio" data-theme-choice="dark">Dark blue</button>
+                <button type="button" role="menuitemradio" data-theme-choice="light">Soft light</button>
+                <button type="button" role="menuitemradio" data-theme-choice="solarized-dark">Solarized Dark</button>
+                <button type="button" role="menuitemradio" data-theme-choice="solarized-light">Solarized Light</button>
+              </div>
+            </details>
+            <button id="top-chart-settings" class="btn" type="button" title="Chart settings" aria-label="Settings">Settings</button>
+            <button id="chart-tabs-toggle" class="btn" type="button" aria-pressed="false" title="Show one chart per tab">Tab View</button>
+          </div>
+          <div class="dock-pill omega-extra-features" aria-label="Extra features">
+            <span class="omega-extra-features-label">Extra</span>
+            <details id="replay-menu" class="timeframe-menu">
+              <summary aria-label="Open bar replay controls">Replay</summary>
+              <div class="timeframe-menu-content">
+                <label for="replay-from">Start from</label>
+                <input id="replay-from" type="datetime-local" step="60" aria-label="Replay start date and time">
+                <label for="replay-speed">Playback speed</label>
+                <select id="replay-speed" class="chart-toolbar-input" aria-label="Replay playback speed">
+                  <option value="10000">0.1×</option><option value="5000">0.2×</option><option value="3333">0.3×</option><option value="2500">0.4×</option><option value="2000">0.5×</option><option value="1667">0.6×</option><option value="1429">0.7×</option><option value="1250">0.8×</option><option value="1111">0.9×</option><option value="1000" selected>1×</option><option value="667">1.5×</option><option value="500">2×</option><option value="333">3×</option><option value="250">4×</option><option value="200">5×</option><option value="100">10×</option>
+                </select>
+                <small id="replay-status" role="status">Choose a starting time, then start replay.</small>
+                <div id="replay-controls"><button id="replay-start" class="btn" type="button">Start</button><button id="replay-step" class="btn" type="button" disabled>Step</button><button id="replay-play-pause" class="btn" type="button" disabled>Play</button><button id="replay-stop" class="btn" type="button" disabled>Stop</button></div>
+              </div>
+            </details>
+            <button id="visual-backtest-toggle" class="btn" type="button" title="Open Visual Backtest" aria-label="Open Visual Backtest">Visual Backtest</button>
+          </div>
+          </div>
+          <div class="trading-account-actions" role="group" aria-label="Data Feeds">
+            <button id="local-feeds-toggle" class="btn" type="button">Data Feeds</button>
+          </div>
+          <div id="trading-account-status" class="trading-account-status" title="Selected trading account">
+            <span class="trading-account-label">Trading account</span>
+            <select id="trading-account-select" aria-label="Select trading account">
+              <option value="local-demo">DEMO-25000 USD</option>
+            </select>
+            <span class="trading-account-summary"><strong id="trading-account-mode">DEMO</strong><span id="trading-account-detail">Local account</span></span>
+          </div>
+        </div>
+
+        <div id="update-info-modal" role="dialog" aria-modal="true" aria-labelledby="update-info-title" aria-hidden="true" hidden>
+          <section id="update-info-dialog">
+            <header id="update-info-header">
+              <strong id="update-info-title">Update check</strong>
+              <button id="update-info-close" class="btn" type="button" aria-label="Close update information">×</button>
+            </header>
+            <p id="update-info-message" role="status" aria-live="polite"></p>
+          </section>
+        </div>
+
+        <div id="chart-paper-trade-controls" role="group" aria-label="Chart quick trade" aria-hidden="false">
+          <label for="paper-trade-lots">Volume</label>
+          <input id="paper-trade-lots" type="number" min="0.01" step="0.01" value="0.01" inputmode="decimal">
+          <button id="paper-trade-buy" class="paper-trade-buy" type="button">Buy</button>
+          <button id="paper-trade-sell" class="paper-trade-sell" type="button">Sell</button>
+          <button id="paper-trade-settings-btn" class="btn" type="button" title="SL / TP Settings (Pips / ATR 14)" aria-label="Protection Settings">⚙</button>
+          <span id="paper-trade-status" role="status" aria-live="polite"></span>
+        </div>
+
+        <div id="paper-trade-settings-modal" role="dialog" aria-modal="true" aria-labelledby="paper-trade-settings-title" aria-hidden="true" hidden>
+          <section id="paper-trade-settings-dialog">
+            <header class="modal-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <strong id="paper-trade-settings-title" style="font-size:14px; font-weight:700;">Trade Settings</strong>
+              <button id="paper-trade-settings-close" class="btn" type="button" aria-label="Close settings">×</button>
+            </header>
+            <div style="display:flex; flex-direction:column; gap:10px; font-size:12px;">
+              <label style="display:flex; justify-content:space-between; align-items:center;">
+                <span>Calculation Mode:</span>
+                <select id="paper-trade-settings-mode" class="chart-toolbar-input" style="width:140px;">
+                  <option value="pips">Pips</option>
+                  <option value="atr">ATR (14)</option>
+                </select>
+              </label>
+              <label style="display:flex; justify-content:space-between; align-items:center;">
+                <span id="paper-trade-sl-label">Stop Loss (pips):</span>
+                <input id="paper-trade-settings-sl" type="number" min="0.1" step="0.5" value="20" class="chart-toolbar-input" style="width:140px;">
+              </label>
+              <label style="display:flex; justify-content:space-between; align-items:center;">
+                <span id="paper-trade-tp-label">Take Profit (pips):</span>
+                <input id="paper-trade-settings-tp" type="number" min="0.1" step="0.5" value="40" class="chart-toolbar-input" style="width:140px;">
+              </label>
+              <hr style="width:100%; border:0; border-top:1px solid var(--omega-border);">
+              <p>Use the single Lots field on the trading panel for order size. The trade pane's quick volume buttons only select a preset for that field.</p>
+              <label class="paper-trade-setting-row">
+                <span>Maximum open paper trades (0 = unlimited)</span>
+                <input id="paper-trade-max-open" type="number" min="0" step="1" value="0" class="chart-toolbar-input">
+              </label>
+              <label class="paper-trade-setting-check">
+                <input id="paper-trade-confirm-open" type="checkbox" checked>
+                <span>Preview and confirm before opening a trade</span>
+              </label>
+              <label class="paper-trade-setting-check">
+                <input id="paper-trade-preview-trade" type="checkbox" checked>
+                <span>Show preview before opening a trade</span>
+              </label>
+              <label class="paper-trade-setting-check">
+                <input id="paper-trade-dont-ask-again" type="checkbox">
+                <span>Skip preview permanently (don't ask again)</span>
+              </label>
+              <hr style="width:100%; border:0; border-top:1px solid var(--omega-border);">
+              <strong>Sound</strong>
+              <label class="paper-trade-setting-check">
+                <input id="paper-trade-sounds-enabled" type="checkbox" checked>
+                <span>Enable trading sounds</span>
+              </label>
+              <label class="paper-trade-setting-row">
+                <span>Sound volume <output id="paper-trade-sound-volume-value">50%</output></span>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <input id="paper-trade-sound-volume" type="range" min="0" max="100" step="1" value="50" style="flex:1;">
+                  <input id="paper-trade-sound-volume-input" type="number" min="0" max="100" step="1" value="50" style="width:60px;" aria-label="Sound volume value">
+                </div>
+              </label>
+              <div class="paper-trade-setting-row">
+                <span>Preview each event</span>
+                <div class="paper-trade-sound-tests" role="group" aria-label="Preview trading sounds">
+                  <button type="button" class="btn paper-trade-sound-test" data-sound="orderPlaced" title="Order placed">Order</button>
+                  <button type="button" class="btn paper-trade-sound-test" data-sound="orderFilled" title="Order filled">Fill</button>
+                  <button type="button" class="btn paper-trade-sound-test" data-sound="tradeClosed" title="Trade closed">Close</button>
+                  <button type="button" class="btn paper-trade-sound-test" data-sound="takeProfitHit" title="Take profit hit">TP</button>
+                  <button type="button" class="btn paper-trade-sound-test" data-sound="stopLossHit" title="Stop loss hit">SL</button>
+                  <button type="button" class="btn paper-trade-sound-test" data-sound="error" title="Error">Error</button>
+                </div>
+              </div>
+              <small class="paper-trade-settings-note">Settings apply to local paper trading only; they do not set broker-side order limits.</small>
+              <hr style="width:100%; border:0; border-top:1px solid var(--omega-border);">
+              <strong>Trade rectangle appearance</strong>
+              <label style="display:flex; justify-content:space-between; align-items:center;">
+                <span>Order color:</span>
+                <input id="paper-trade-entry-color" type="color" aria-label="Order rectangle color" style="width:52px; height:28px;">
+              </label>
+              <label style="display:flex; justify-content:space-between; align-items:center;">
+                <span>Stop loss color:</span>
+                <input id="paper-trade-sl-color" type="color" aria-label="Stop loss rectangle color" style="width:52px; height:28px;">
+              </label>
+              <label style="display:flex; justify-content:space-between; align-items:center;">
+                <span>Take profit color:</span>
+                <input id="paper-trade-tp-color" type="color" aria-label="Take profit rectangle color" style="width:52px; height:28px;">
+              </label>
+              <label style="display:flex; justify-content:space-between; align-items:center;">
+                <span>Rectangle transparency: <output id="paper-trade-transparency-value">18%</output></span>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <input id="paper-trade-transparency" type="range" min="0" max="80" step="1" value="18" aria-label="Trade rectangle transparency" style="width:140px;">
+                  <input id="paper-trade-transparency-input" type="number" min="0" max="80" step="1" value="18" style="width:60px;" aria-label="Transparency value">
+                </div>
+              </label>
+              <small id="paper-trade-settings-hint" style="color:var(--omega-muted); font-size:11px;">Default: 20 pips SL / 40 pips TP.</small>
+              <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+                <button id="paper-trade-settings-save" class="btn btn-primary" type="button">Save</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="paper-trade-history-modal" class="omega-trade-history-pane" role="region" aria-labelledby="paper-trade-history-title" aria-hidden="true" hidden>
+          <section id="paper-trade-history-dialog">
+            <div id="paper-trade-history-resize" class="omega-trade-history-resize" role="separator" aria-orientation="horizontal" aria-label="Resize Trade History pane upward" tabindex="0" title="Drag upward to enlarge Trade History">
+              <button id="paper-trade-history-pane-close" class="btn omega-trade-history-pane-close" type="button" aria-label="Close Trade History pane" title="Close Trade History pane">&#9660;</button>
+            </div>
+            <header class="modal-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <strong id="paper-trade-history-title" style="font-size:14px; font-weight:700;">Trade History (Closed Positions)</strong>
+              <div style="display:flex; gap:8px;">
+                <button id="paper-trade-history-clear" class="btn" type="button" title="Clear all history">Clear</button>
+                <button id="paper-trade-history-close" class="btn" type="button" aria-label="Close history">×</button>
+              </div>
+            </header>
+            <div id="paper-trade-history-list" style="overflow-y:auto; flex:1; max-height:420px;">
+              <!-- History rows injected here -->
+            </div>
+          </section>
+        </div>
+
+        <div id="paper-open-trades-modal" class="omega-open-trades-pane" role="region" aria-labelledby="paper-open-trades-title" aria-hidden="true" hidden>
+          <section id="paper-open-trades-dialog">
+            <div id="paper-open-trades-resize" class="omega-open-trades-resize" role="separator" aria-orientation="horizontal" aria-label="Resize Trades pane upward" tabindex="0" title="Drag upward to enlarge the Trades pane">
+              <button id="paper-open-trades-pane-close" class="btn omega-open-trades-pane-close" type="button" aria-label="Close Trades pane" title="Close Trades pane">&#9660;</button>
+            </div>
+            <header id="paper-open-trades-header" class="modal-header omega-open-trades-header">
+              <strong id="paper-open-trades-title" class="omega-open-trades-title">Open Trades</strong>
+              <label class="omega-trade-fee-setting" title="Estimated round-turn fees deducted from displayed profit, in each trade's quote currency.">
+                Fee / lot
+                <input id="paper-open-trades-fee-per-lot" type="number" min="0" step="0.01" value="0" aria-label="Estimated round-turn fee per lot">
+              </label>
+              <button id="paper-open-trades-close" class="btn omega-open-trades-pane-close" type="button" aria-label="Close open trades">×</button>
+            </header>
+            <div id="paper-open-trades-list" role="list" class="omega-open-trades-list"></div>
+          </section>
+        </div>
+
+        <div id="paper-pending-order-modal" role="dialog" aria-modal="true" aria-labelledby="paper-pending-order-title" aria-hidden="true" hidden>
+          <section id="paper-pending-order-dialog">
+            <header class="modal-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <div>
+                <strong id="paper-pending-order-title">Add Pending Paper Order</strong>
+                <small id="paper-pending-order-symbol" style="display:block; color:var(--omega-muted); margin-top:3px;"></small>
+              </div>
+              <button id="paper-pending-order-close" class="btn" type="button" aria-label="Close pending order form">×</button>
+            </header>
+            <form id="paper-pending-order-form" style="display:flex; flex-direction:column; gap:10px;">
+              <label class="paper-pending-order-field">
+                <span>Side</span>
+                <select id="paper-pending-order-side" class="chart-toolbar-input">
+                  <option value="buy">Buy</option>
+                  <option value="sell">Sell</option>
+                </select>
+              </label>
+              <label class="paper-pending-order-field">
+                <span>Entry price</span>
+                <input id="paper-pending-order-entry" class="chart-toolbar-input" type="number" min="0" step="any" required>
+              </label>
+              <label class="paper-pending-order-field">
+                <span>Volume (lots)</span>
+                <input id="paper-pending-order-lots" class="chart-toolbar-input" type="number" min="0.01" step="0.01" value="0.10" required>
+              </label>
+              <label class="paper-pending-order-field">
+                <span>Protection mode</span>
+                <select id="paper-pending-order-protection-mode" class="chart-toolbar-input">
+                  <option value="pips">Pips</option>
+                  <option value="atr">ATR (14)</option>
+                </select>
+              </label>
+              <label class="paper-pending-order-field">
+                <span id="paper-pending-order-sl-label">Stop loss (pips)</span>
+                <input id="paper-pending-order-sl-value" class="chart-toolbar-input" type="number" min="0.1" step="0.1" required>
+              </label>
+              <label class="paper-pending-order-field">
+                <span id="paper-pending-order-tp-label">Take profit (pips)</span>
+                <input id="paper-pending-order-tp-value" class="chart-toolbar-input" type="number" min="0.1" step="0.1" required>
+              </label>
+              <small id="paper-pending-order-protection-preview" class="paper-pending-order-notice"></small>
+              <small class="paper-pending-order-notice">Paper order only. It will activate when chart price reaches the entry; no broker order is sent.</small>
+              <small id="paper-pending-order-message" aria-live="polite"></small>
+              <footer class="paper-trade-close-actions">
+                <button id="paper-pending-order-cancel" class="btn" type="button">Cancel</button>
+                <button id="paper-pending-order-submit" class="btn btn-primary" type="submit">Place pending order</button>
+              </footer>
+            </form>
+          </section>
+        </div>
+
+        <nav id="chart-tabs-bar" aria-label="Chart tabs" hidden>
+          <div id="chart-tabs-list" role="tablist" aria-label="Open charts"></div>
+          <button id="chart-tabs-add" class="chart-tab-add" type="button" title="Open another chart tab" aria-label="Open another chart tab">+</button>
+        </nav>
+
+        <div id="chart-stage">
+          <aside id="watchlist-panel" class="omega-watchlist" aria-label="Market watchlist" aria-hidden="true" hidden>
+            <header class="omega-watchlist-header">
+              <strong>Watchlist</strong>
+              <button id="watchlist-add-toggle" type="button" class="btn" aria-label="Add a supported symbol" title="Add a supported symbol">+</button>
+              <button id="watchlist-close" type="button" class="btn" aria-label="Close watchlist">×</button>
+            </header>
+            <section id="watchlist-add-form" class="omega-watchlist-add" aria-label="Add supported symbol" hidden>
+              <label for="watchlist-search">Search active feed symbols</label>
+              <input id="watchlist-search" type="search" autocomplete="off" placeholder="Search symbols…" />
+              <div id="watchlist-search-results" class="watchlist-search-results" role="list"></div>
+            </section>
+            <p id="watchlist-status" class="watchlist-status" role="status" aria-live="polite">Connect a market-data feed to populate the watchlist.</p>
+            <div id="watchlist-list" class="watchlist-list"></div>
+          </aside>
+          <!-- Chart canvas area (Vela renders here) -->
+          <div id="chart"></div>
+        </div>
+
+      </div>
+
+      <div id="resize-handle"></div>
+
+      <!-- 2. Pine Editor Drawer -->
+      <div id="editor-drawer">
+        <div class="editor-toolbar">
+          <div class="toolbar-group editor-primary">
+            <span id="pine-editor-title" class="editor-title">PINE EDITOR (v6)</span>
+            <select id="script-select" class="script-select"></select>
+            <button id="btn-new" class="btn" type="button" title="Create a new Pine script">+ New</button>
+            <button id="btn-export-script" class="btn" type="button" title="Save the current Pine script as a .pine file">Export</button>
+            <span class="editor-toolbar-separator" aria-hidden="true"></span>
+            <button id="btn-save" class="btn btn-primary" title="Save and transpile the current Pine script">Save</button>
+            <button id="btn-add-to-chart" class="btn" type="button" title="Add the last saved version of this Pine script to the active chart">Add to chart</button>
+            <button id="btn-update-chart" class="btn" type="button" title="Compile and update the existing indicator with this script name">Update chart</button>
+            <span class="editor-toolbar-separator editor-toolbar-separator--thick" aria-hidden="true"></span>
+            <button id="btn-editor-fullscreen" class="btn btn-icon" type="button" aria-pressed="false"
+              title="Expand the editor to fill the platform" aria-label="Expand the editor">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m6 14 6-6 6 6" />
+              </svg>
+            </button>
+            <span class="editor-toolbar-separator editor-toolbar-separator--thick" aria-hidden="true"></span>
+            <div class="editor-standalone-actions">
+              <button id="btn-open-standalone-editor" class="btn" type="button" title="Open this script in a standalone editor window">Standalone Editor</button>
+              <div class="editor-drawer-controls" role="group" aria-label="Pine editor window controls">
+                <button id="btn-editor-dismiss" class="editor-close editor-dismiss" type="button"
+                  onclick="toggleEditor(false)" title="Close the Pine editor" aria-label="Close the Pine editor">×</button>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar-group editor-secondary" role="group" aria-label="Less used editor actions">
+            <button id="btn-ai-assistant" class="btn" type="button" aria-expanded="false" aria-controls="pine-ai-assistant" title="Open the AI assistant">AI Assistant</button>
+            <button id="btn-pine-reference" class="btn" type="button" aria-expanded="true" aria-controls="pine-reference" title="Pine method documentation">Pine docs</button>
+            <button id="btn-upgrade-v6" class="btn" type="button" title="Convert a Pine Script v3, v4, or v5 script to v6">Upgrade to v6</button>
+            <button id="btn-delete" class="btn" type="button" title="Delete the current script">Delete</button>
+            <span id="editor-status" class="editor-status" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+        <div id="editor-workspace">
+          <div id="editor-top">
+            <div id="code-editor"></div>
+            <div id="pine-ai-resize" role="separator" aria-orientation="vertical" aria-label="Resize AI assistant" tabindex="0" hidden></div>
+            <aside id="pine-ai-assistant" aria-label="Pine AI assistant" hidden>
+              <div class="pine-ai-heading">
+                <div>
+                  <strong>Pine AI</strong>
+                  <span id="pine-ai-model-status" class="pine-ai-model-status" role="status">Select a provider and model</span>
+                  <p id="pine-ai-conversation-title" class="pine-ai-visually-hidden">New conversation</p>
+                </div>
+                <div class="pine-ai-toolbar">
+                  <button id="pine-ai-new" class="btn" type="button" title="Start a new conversation">New</button>
+                  <button id="pine-ai-history-toggle" class="btn" type="button" aria-expanded="true" aria-controls="pine-ai-history" title="Show saved conversations">Chats</button>
+                  <details id="pine-ai-settings">
+                    <summary class="btn" title="AI provider and model settings">Settings</summary>
+                    <div class="pine-ai-settings-panel">
+                      <div class="pine-ai-row">
+                        <label class="pine-ai-field" for="pine-ai-provider">Provider
+                          <select id="pine-ai-provider">
+                            <option value="local">Local OpenAI-compatible API</option>
+                            <option value="gemini">Google Gemini</option>
+                            <option value="groq">Groq</option>
+                            <option value="openrouter">OpenRouter</option>
+                            <option value="anthropic">Anthropic Claude</option>
+                            <option value="cohere">Cohere</option>
+                            <option value="deepseek">DeepSeek</option>
+                            <option value="mistral">Mistral AI</option>
+                          <option value="together">Together AI</option>
+                          <option value="zai">Z.AI GLM (China)</option>
+                          <option value="siliconflow">SiliconFlow (China)</option>
+                          <option value="sambanova">SambaNova Cloud</option>
+                          </select>
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-model">Model
+                          <select id="pine-ai-model" aria-label="AI model"></select>
+                        </label>
+                      </div>
+                      <div id="pine-ai-cloud-settings">
+                        <label class="pine-ai-field" for="pine-ai-key">API key
+                          <input id="pine-ai-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Stored encrypted with Windows">
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-save-key" class="btn" type="button">Save key securely</button>
+                          <button id="pine-ai-clear-key" class="btn" type="button">Remove key</button>
+                        </div>
+                        <button id="pine-ai-test-key" class="btn" type="button">Test key &amp; load models</button>
+                      </div>
+                      <div id="pine-ai-local-settings" hidden>
+                        <label class="pine-ai-field" for="pine-ai-local-preset">Local AI program
+                          <select id="pine-ai-local-preset" aria-label="Local AI program">
+                            <option value="custom">Custom OpenAI-compatible endpoint</option>
+                            <option value="cherry">Cherry Studio Gateway</option>
+                            <option value="lmstudio">LM Studio</option>
+                            <option value="atomic">Atomic Chat</option>
+                            <option value="koboldcpp">KoboldCpp</option>
+                            <option value="msty">Msty Nexus</option>
+                            <option value="ollama">Ollama OpenAI-compatible API</option>
+                          </select>
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-url">Local API base URL
+                          <input id="pine-ai-local-url" type="url" spellcheck="false" maxlength="500" placeholder="http://127.0.0.1:1234/v1">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-key">Optional local API key
+                          <input id="pine-ai-local-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Optional; encrypted if saved">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-model-search">Search models
+                          <input id="pine-ai-local-model-search" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by model name or ID">
+                        </label>
+                        <label class="pine-ai-field" for="pine-ai-local-model">Model ID
+                          <select id="pine-ai-local-model" aria-label="Local model"></select>
+                        </label>
+                        <span id="pine-ai-ollama-status" class="pine-ai-model-status" role="status" hidden></span>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-test-local" class="btn" type="button">Test endpoint &amp; load models</button>
+                          <button id="pine-ai-save-local" class="btn" type="button">Save local settings</button>
+                        </div>
+                        <button id="pine-ai-unload-model" class="btn" type="button" disabled>Unload Ollama model</button>
+                        <button id="pine-ai-clear-local-key" class="btn" type="button">Remove saved local API key</button>
+                        <small>Localhost only. Prompts go directly to your local server; LuxAlgo research is separate and optional.</small>
+                      </div>
+                      <details class="pine-ai-llama-details">
+                        <summary class="btn">Built-in llama.cpp model loading</summary>
+                        <section id="pine-ai-llama-controls" class="pine-ai-llama-controls" aria-label="Built-in llama.cpp models">
+                        <strong>Built-in llama.cpp · GGUF</strong>
+                        <div class="pine-ai-row">
+                          <label class="pine-ai-field" for="pine-ai-llama-directory">Model folder
+                            <span id="pine-ai-llama-directory" class="pine-ai-model-status" role="status">Loading model folder…</span>
+                          </label>
+                          <button id="pine-ai-llama-browse" class="btn" type="button">Browse</button>
+                        </div>
+                        <label class="pine-ai-field" for="pine-ai-llama-chat-model">Chat AI
+                          <select id="pine-ai-llama-chat-model" aria-label="GGUF model for Chat AI"></select>
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-llama-chat-load" class="btn" type="button">Load Chat AI</button>
+                          <button id="pine-ai-llama-chat-stop" class="btn" type="button">Stop Chat AI</button>
+                        </div>
+                        <span id="pine-ai-llama-chat-status" class="pine-ai-model-status" role="status">Chat AI model not loaded</span>
+                        <label class="pine-ai-field" for="pine-ai-llama-inline-model">Inline AI
+                          <select id="pine-ai-llama-inline-model" aria-label="GGUF model for Inline AI"></select>
+                        </label>
+                        <div class="pine-ai-row">
+                          <button id="pine-ai-llama-inline-load" class="btn" type="button">Load Inline AI</button>
+                          <button id="pine-ai-llama-inline-stop" class="btn" type="button">Stop Inline AI</button>
+                        </div>
+                        <span id="pine-ai-llama-inline-status" class="pine-ai-model-status" role="status">Inline AI model not loaded</span>
+                        </section>
+                      </details>
+                    </div>
+                  </details>
+                  <button id="pine-ai-close" class="btn" type="button" aria-label="Close AI assistant">Close</button>
+                </div>
+              </div>
+              <div id="pine-ai-workspace">
+                <aside id="pine-ai-history" data-panel-id="pine-ai-history" aria-label="Saved conversations" tabindex="-1"></aside>
+                <div id="pine-ai-chat" role="log" aria-live="polite" aria-label="Conversation messages"></div>
+              </div>
+              <p id="pine-ai-status" role="status" aria-live="polite"></p>
+              <details id="pine-ai-options">
+                <summary class="btn" title="Optional AI features">More</summary>
+                <div class="pine-ai-options-panel">
+                  <label id="pine-ai-luxalgo-option" title="Search the public, read-only LuxAlgo Library over MCP and include the results with your prompt">
+                    <input id="pine-ai-luxalgo-enabled" type="checkbox">
+                    Library research
+                  </label>
+                  <label id="pine-ai-edit-option" title="Allow the assistant to apply code blocks to the Pine editor">
+                    <input id="pine-ai-allow-edit" type="checkbox">
+                    Apply code
+                  </label>
+                  <label id="pine-ai-inline-option" title="Show AI code completions inline while you type">
+                    <input id="pine-ai-inline-enabled" type="checkbox">
+                    Inline suggestions
+                  </label>
+                </div>
+              </details>
+              <div id="pine-ai-composer">
+                <textarea id="pine-ai-prompt" maxlength="4000" aria-label="Message" placeholder="Ask about the current Pine script…"></textarea>
+                <button id="pine-ai-ask" class="btn btn-primary" type="button">Send</button>
+                <button id="pine-ai-stop" class="btn" type="button" hidden>Stop</button>
+              </div>
+            </aside>
+            <div id="pine-reference-resize" role="separator" aria-orientation="vertical" aria-label="Resize Pine method reference" tabindex="0"></div>
+            <aside id="pine-reference" aria-label="Pine method documentation">
+              <div class="pine-reference-heading">
+                <strong>Pine documentation</strong>
+              </div>
+              <input id="pine-reference-search" type="search" placeholder="Search Pine methods…" aria-label="Search Pine methods" />
+              <div id="pine-reference-list"></div>
+            </aside>
+          </div>
+          <div id="console-divider"></div>
+          <div id="console-panel">
+            <div class="console-header">
+              <span class="console-header-title">PINE CONSOLE</span>
+              <button id="console-toggle-handle" class="console-toggle-handle" type="button" aria-label="Collapse Pine Console" title="Collapse Pine Console">▼</button>
+            </div>
+            <div class="console-split">
+              <section class="console-section" aria-labelledby="console-errors-title">
+                <header class="console-section-header">
+                  <span id="console-errors-title">Code Errors</span>
+                  <button class="console-btn" id="console-errors-clear" type="button" title="Clear code errors">Clear</button>
+                </header>
+                <div id="console-output" role="log" aria-live="polite" aria-label="Pine code errors"></div>
+              </section>
+              <section class="console-section" aria-labelledby="console-activity-title">
+                <header class="console-section-header">
+                  <span id="console-activity-title">Activity</span>
+                  <button class="console-btn" id="console-activity-clear" type="button" title="Clear editor activity">Clear</button>
+                </header>
+                <div id="console-activity-output" role="log" aria-live="polite" aria-label="Pine editor activity"></div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="indicator-browser-modal" aria-hidden="true">
+        <section id="indicator-browser" role="dialog" aria-modal="true" aria-label="Indicators">
+          <header id="indicator-browser-header">
+            <strong>Indicators</strong>
+            <input id="indicator-browser-search" type="search" placeholder="Search indicators, concepts or aliases" aria-label="Search indicators" />
+            <button id="indicator-browser-create-category" class="btn" type="button">Create category</button>
+            <button id="indicator-browser-create-script" class="btn" type="button">New Indicator</button>
+            <button id="indicator-browser-close" class="btn" aria-label="Close indicator browser">Close</button>
+          </header>
+          <div id="indicator-browser-body">
+            <nav id="indicator-browser-categories" aria-label="Indicator categories"></nav>
+            <section id="indicator-browser-results"><h2>Discover</h2><div id="indicator-browser-grid"></div></section>
+            <aside id="indicator-browser-detail" aria-label="Indicator details"></aside>
+          </div>
+          <footer id="indicator-browser-footer"><span id="indicator-browser-count"></span></footer>
+        </section>
+      </div>
+
+      <div id="broker-modal" data-panel-id="broker" aria-hidden="true" hidden>
+        <section id="broker-dialog" role="dialog" aria-modal="true" aria-labelledby="broker-title">
+          <header id="broker-header">
+            <button class="btn local-feed-back" type="button" data-feed-back="broker-modal" aria-label="Back to data feed providers">← Data Feeds</button>
+            <strong id="broker-title">Alpaca Market Data · Read Only</strong>
+            <button id="broker-close" class="btn" type="button" aria-label="Close broker panel">Close</button>
+          </header>
+          <div id="broker-body">
+            <p class="broker-safety-note">Enter your Alpaca API Key ID and Secret Key. Credentials stay in memory unless you explicitly save them; saved credentials are encrypted on this device. Review and confirm each order before submission.</p>
+            <p id="broker-setup-note">Use credentials from your Alpaca paper or live account. Select the matching environment when creating the keys.</p>
+            <div id="broker-fields" class="broker-credential-fields">
+              <label class="broker-field" for="alpaca-api-key">Alpaca API Key ID / Login
+                <input id="alpaca-api-key" type="text" autocomplete="off" spellcheck="false">
+              </label>
+              <label class="broker-field" for="alpaca-api-secret">Alpaca Secret Key
+                <input id="alpaca-api-secret" type="password" autocomplete="new-password" spellcheck="false">
+              </label>
+            </div>
+            <div id="broker-actions">
+              <button id="broker-connect" class="btn btn-primary" type="button">Connect to Alpaca</button>
+              <button id="broker-save-credentials" class="btn" type="button" hidden>Save credentials</button>
+              <button id="broker-refresh" class="btn" type="button" hidden>Refresh</button>
+              <button id="broker-disconnect" class="btn" type="button" hidden>Disconnect</button>
+            </div>
+            <p id="broker-status" role="status" aria-live="polite">Broker credentials are session-only unless you explicitly save supported credentials.</p>
+            <form id="alpaca-order-form" class="mt5-order-fields" hidden>
+              <label class="broker-field">Symbol<input name="symbol" required maxlength="20"></label>
+              <label class="broker-field">Side<select name="side"><option value="buy">Buy</option><option value="sell">Sell</option></select></label>
+              <label class="broker-field">Amount (USD)<input name="notional" type="number" min="0.01" step="0.01" required></label>
+              <button class="btn btn-primary" type="submit">Review market order</button>
+            </form>
+            <div id="broker-accounts" aria-live="polite"></div>
+          </div>
+        </section>
+      </div>
+
+      <div id="mt5-feed-modal" data-panel-id="mt5-feed" aria-hidden="true" hidden>
+        <section id="mt5-feed-dialog" role="dialog" aria-modal="true" aria-labelledby="mt5-feed-title">
+          <header id="mt5-feed-header">
+            <button class="btn local-feed-back" type="button" data-feed-back="mt5-feed-modal" aria-label="Back to data feed providers">← Data Feeds</button>
+            <strong id="mt5-feed-title">MetaTrader 5 Market Data and Trading</strong>
+            <button id="mt5-feed-close" class="btn" type="button" aria-label="Close MetaTrader feed panel">Close</button>
+          </header>
+          <div id="mt5-feed-body">
+            <p>Connect to the broker account signed in to your local MetaTrader 5 terminal. Omega does not read or save your MT5 password. Manual chart orders require this session to be armed and a confirmed chart preview. Pine strategy orders also require the separate preview opt-in below and confirmation for each order.</p>
+            <label class="broker-field" for="mt5-python-path">Python executable (optional)
+              <input id="mt5-python-path" type="text" placeholder="py -3.13 or quoted full path to python.exe" autocomplete="off" spellcheck="false">
+            </label>
+            <p class="mt5-feed-setup">Use a 64-bit Python interpreter for which the MetaTrader5 package imports successfully. If the default Python fails, install MetaTrader5 for a supported interpreter and enter <code>py -3.13</code> (or a quoted full path) above. Keep MT5 open and signed in to your broker. Select its instruments in the chart symbol picker using the <code>MT5:</code> prefix.</p>
+            <div id="mt5-feed-actions">
+              <button id="mt5-feed-connect" class="btn btn-primary" type="button">Connect to MT5</button>
+              <button id="mt5-feed-disconnect" class="btn" type="button" hidden>Disconnect</button>
+            </div>
+            <p id="mt5-feed-connection-status" role="status" aria-live="polite">MT5 is not connected.</p>
+            <section id="mt5-trading-tools-panel" aria-label="MT5 trading tools" hidden>
+              <section id="mt5-order-journal" aria-label="Live order journal">
+                <div class="mt5-section-heading">
+                  <strong>Order reconciliation</strong>
+                  <button id="mt5-order-journal-refresh" class="btn" type="button">Refresh</button>
+                </div>
+                <p id="mt5-order-journal-status" role="status" aria-live="polite"></p>
+                <div id="mt5-order-journal-entries"></div>
+              </section>
+            </section>
+          </div>
+        </section>
+      </div>
+      <div id="safeguards-settings-modal" class="safeguards-settings-modal" role="dialog" aria-modal="true" aria-labelledby="safeguards-settings-title" aria-hidden="true" hidden>
+        <section class="safeguards-settings-dialog">
+          <header>
+            <div>
+              <strong id="safeguards-settings-title">Execution settings</strong>
+              <small>Live order routing and offline Broker SDK capability status</small>
+            </div>
+            <button id="safeguards-settings-close" class="btn" type="button" aria-label="Close safeguards options">Close</button>
+          </header>
+          <p class="safeguards-critical-note">MT5 live orders require account-bound session arming, a stop-loss, a confirmed chart preview, a per-order volume cap, and a healthy order journal. Broker-native trading permissions and instrument rules still apply.</p>
+          <label class="safeguards-quick-trade-opt-in">
+            <input id="safeguards-quick-trade-enabled" type="checkbox" checked>
+            <span><strong>Enable chart Quick Trade</strong><small>On by default. Buy/Sell opens a confirmed market-order preview and submits only to the explicitly selected, connected MT5 or IBKR account; MT5 also requires live-session arming. A local demo account cannot place chart orders.</small></span>
+          </label>
+          <p id="safeguards-mt5-binding" role="status">MT5 live orders require explicit session arming for the connected account.</p>
+          <div class="safeguards-settings-fields">
+            <label for="safeguards-max-mt5-volume">Maximum MT5 volume per live order (lots)
+              <input id="safeguards-max-mt5-volume" type="number" min="0.00000001" max="20" step="any" value="20" required>
+            </label>
+            <label for="safeguards-max-sdk-notional">SDK scenario notional cap (USD, simulation only)
+              <input id="safeguards-max-sdk-notional" type="number" min="1" max="10000" step="1" value="100" required>
+            </label>
+          </div>
+          <p>MT5 enforces the configured per-order cap (up to 20 lots), a required stop-loss, explicit session arming, chart confirmation, and order-journal integrity. The SDK notional setting applies to offline scenarios only.</p>
+          <div class="safeguards-actions">
+            <button id="safeguards-save" class="btn btn-primary" type="button">Save safeguards</button>
+            <button id="safeguards-run-scenarios" class="btn" type="button">Run offline scenarios</button>
+          </div>
+          <p id="safeguards-settings-status" role="status" aria-live="polite"></p>
+          <details class="safeguards-section" open>
+            <summary>Current execution behavior</summary>
+            <ul id="safeguards-hard-guards"></ul>
+          </details>
+          <details class="safeguards-section">
+            <summary>Supported Broker SDK providers</summary>
+            <div id="safeguards-provider-list"></div>
+          </details>
+          <details class="safeguards-section" open>
+            <summary>Scenario results · offline mocks only</summary>
+            <div id="safeguards-scenario-results" aria-live="polite"></div>
+          </details>
+        </section>
+      </div>
+
+      <div id="local-feeds-modal" aria-hidden="true" hidden>
+        <section id="local-feeds-dialog" role="dialog" aria-modal="true" aria-labelledby="local-feeds-title">
+          <header id="local-feeds-header">
+            <div><strong id="local-feeds-title">Data Feeds</strong><p>Only one provider connection can be active at a time.</p></div>
+            <button id="local-feeds-close" class="btn" type="button" aria-label="Close data feeds">Close</button>
+          </header>
+          <div id="local-feeds-body">
+            <button class="local-feed-option" type="button" data-local-feed="mt5"><strong>MetaTrader 5</strong><span>Market data, manual orders, and optional auto-trading for Pine strategies through the local MT5 terminal.</span></button>
+            <button class="local-feed-option" type="button" data-local-feed="alpaca"><strong>Alpaca</strong><span>Connect for account data, market data, and market orders.</span></button>
+            <button class="local-feed-option" type="button" data-local-feed="ibkr"><strong>Interactive Brokers · TWS / IB Gateway</strong><span>Local paper/live connection, chart order routing, and optional account-bound Pine strategy trading.</span></button>
+            <button class="local-feed-option" type="button" data-local-feed="quantower"><strong>Quantower</strong><span>Market data plus manual and live Pine strategy orders through the active Quantower connection.</span></button>
+            <button class="local-feed-option" type="button" data-local-feed="ctrader"><strong>cTrader · MCP Gateway</strong><span>Chart market data and confirmed manual orders through selected local MCP tools.</span></button>
+            <button class="local-feed-option" type="button" data-local-feed="saxo"><strong>Saxo OpenAPI</strong><span>Connect using Saxo OAuth authorization and select the active Saxo account.</span></button>
+          </div>
+        </section>
+      </div>
+
+      <div id="ibkr-feed-modal" aria-hidden="true" hidden>
+        <section id="ibkr-feed-dialog" role="dialog" aria-modal="true" aria-labelledby="ibkr-feed-title">
+          <header><button class="btn local-feed-back" type="button" data-feed-back="ibkr-feed-modal" aria-label="Back to data feed providers">← Data Feeds</button><strong id="ibkr-feed-title">Interactive Brokers · TWS / IB Gateway</strong><button id="ibkr-feed-close" class="btn" type="button" aria-label="Close IBKR connection">Close</button></header>
+          <div id="ibkr-feed-body">
+            <p>Keep TWS or IB Gateway open and signed in. Enable socket clients in its API settings. Connections stay on this computer; no IBKR password is requested or stored. TWS defaults are paper 7497 and live 7496; IB Gateway defaults are paper 4002 and live 4001. Enter the matching local port and verify the account before connecting.</p>
+            <div class="mt5-order-fields">
+              <label class="broker-field" for="ibkr-environment">Environment
+                <select id="ibkr-environment"><option value="paper" selected>Paper trading</option><option value="live">Live account</option></select>
+              </label>
+              <label class="broker-field" for="ibkr-host">TWS / Gateway host
+                <input id="ibkr-host" type="text" value="127.0.0.1" maxlength="64" autocomplete="off" spellcheck="false">
+              </label>
+              <label class="broker-field" for="ibkr-port">Socket port
+                <input id="ibkr-port" type="number" min="1" max="65535" step="1" value="7497" required>
+              </label>
+              <label class="broker-field" for="ibkr-client-id">API client ID
+                <input id="ibkr-client-id" type="number" min="1" max="32767" step="1" value="31" required>
+              </label>
+            </div>
+            <div class="mt5-feed-actions"><button id="ibkr-feed-connect" class="btn btn-primary" type="button">Connect to TWS / Gateway</button><button id="ibkr-feed-disconnect" class="btn" type="button" hidden>Disconnect</button></div>
+            <p id="ibkr-feed-status" role="status" aria-live="polite">Disconnected. Chart orders require real-time bid/ask data from IBKR.</p>
+            <div id="ibkr-account-list" aria-live="polite"></div>
+            <label class="mt5-auto-trading-toggle" for="ibkr-pine-auto-trading">
+              <input id="ibkr-pine-auto-trading" type="checkbox" disabled>
+              <span><strong>Enable Pine strategy order previews on IBKR</strong><small>Off by default and reset when TWS disconnects or the selected account changes. Each detected fill requires chart confirmation; entries use Pine protection when available, otherwise Omega’s configured SL/TP.</small></span>
+            </label>
+            <p id="ibkr-pine-auto-trading-status" role="status" aria-live="polite">Automatic IBKR Pine strategy trading is off.</p>
+            <p class="mt5-feed-setup">Chart symbol format: stocks such as <code>AAPL</code>, forex such as <code>EURUSD</code>, and futures as <code>ES 202609@CME</code> (symbol, YYYYMM expiry, exchange). Futures require an exact contract and real-time market-data permissions. Manual and Pine strategy orders show a preview and submit only after confirmation; strategy previews are separately opt-in.</p>
+          </div>
+        </section>
+      </div>
+
+      <div id="quantower-feed-modal" aria-hidden="true" hidden>
+        <section id="quantower-feed-dialog" role="dialog" aria-modal="true" aria-labelledby="quantower-feed-title">
+          <header><button class="btn local-feed-back" type="button" data-feed-back="quantower-feed-modal" aria-label="Back to data feed providers">← Data Feeds</button><strong id="quantower-feed-title">Quantower Local Feed</strong><button id="quantower-feed-close" class="btn" type="button">Close</button></header>
+          <div id="quantower-feed-body">
+            <p>Start a compatible local bridge in Quantower, then connect here. Orders use the selected connected Quantower account.</p>
+            <div class="mt5-feed-actions"><button id="quantower-feed-connect" class="btn btn-primary" type="button">Connect Quantower</button><button id="quantower-feed-disconnect" class="btn" type="button" hidden>Disconnect</button></div>
+            <p id="quantower-feed-status" role="status" aria-live="polite">Disconnected.</p>
+            <input id="quantower-symbol-search" type="search" placeholder="Search Quantower symbols" aria-label="Search Quantower symbols">
+            <div id="quantower-symbol-list"></div>
+          </div>
+        </section>
+      </div>
+
+      <div id="ctrader-feed-modal" aria-hidden="true" hidden>
+        <section id="ctrader-feed-dialog" role="dialog" aria-modal="true" aria-labelledby="ctrader-feed-title">
+          <header><button class="btn local-feed-back" type="button" data-feed-back="ctrader-feed-modal" aria-label="Back to data feed providers">← Data Feeds</button><strong id="ctrader-feed-title">cTrader · MCP Gateway</strong><button id="ctrader-feed-close" class="btn" type="button" aria-label="Close cTrader connection">Close</button></header>
+          <div id="ctrader-feed-body">
+            <p>Omega connects only to <code>http://127.0.0.1:9876/mcp/</code>. It maps symbols, details, trend bars, and polled spot quotes for charts; only confirmed chart market orders use <code>place_market_order</code>. Orders go to the account currently active in cTrader, so verify demo/live there before confirming. Other discovered tools are catalog-only. The gateway quote response has no source timestamp.</p>
+            <div class="mt5-feed-actions"><button id="ctrader-feed-connect" class="btn btn-primary" type="button">Connect to cTrader MCP</button><button id="ctrader-feed-disconnect" class="btn" type="button" hidden>Disconnect</button></div>
+            <p id="ctrader-feed-status" role="status" aria-live="polite">Disconnected.</p>
+            <div id="ctrader-tool-list" aria-live="polite"></div>
+          </div>
+        </section>
+      </div>
+
+      <div id="saxo-feed-modal" aria-hidden="true" hidden>
+        <section id="saxo-feed-dialog" role="dialog" aria-modal="true" aria-labelledby="saxo-feed-title">
+          <header><button class="btn local-feed-back" type="button" data-feed-back="saxo-feed-modal" aria-label="Back to data feed providers">← Data Feeds</button><strong id="saxo-feed-title">Saxo OpenAPI</strong><button id="saxo-feed-close" class="btn" type="button" aria-label="Close Saxo connection">Close</button></header>
+          <div id="saxo-feed-body">
+            <p>Register the redirect URL <code>http://localhost/omega/saxo-callback</code> for a Saxo OpenAPI application. Omega uses OAuth PKCE; the App Key and session tokens are kept in memory only.</p>
+            <div class="mt5-order-fields">
+              <label class="broker-field" for="saxo-environment">Environment
+                <select id="saxo-environment"><option value="sim" selected>Simulation</option><option value="live">Live</option></select>
+              </label>
+              <label class="broker-field" for="saxo-app-key">Saxo App Key
+                <input id="saxo-app-key" type="text" maxlength="200" autocomplete="off" spellcheck="false" required>
+              </label>
+            </div>
+            <div class="mt5-feed-actions"><button id="saxo-feed-connect" class="btn btn-primary" type="button">Authorize with Saxo</button><button id="saxo-feed-disconnect" class="btn" type="button" hidden>Disconnect</button></div>
+            <p id="saxo-feed-status" role="status" aria-live="polite">Disconnected. Simulation is selected by default.</p>
+            <div id="saxo-account-list" aria-live="polite"></div>
+            <label class="mt5-auto-trading-toggle" for="saxo-pine-auto-trading">
+              <input id="saxo-pine-auto-trading" type="checkbox" disabled>
+              <span><strong>Enable Pine strategy order previews on Saxo</strong><small>Off by default and reset when Saxo disconnects or the selected account changes. Each detected fill requires chart confirmation; entries use Pine protection when available, otherwise Omega’s configured SL/TP.</small></span>
+            </label>
+            <p id="saxo-pine-auto-trading-status" role="status" aria-live="polite">Automatic Saxo Pine strategy trading is off.</p>
+          </div>
+        </section>
+      </div>
+
+      <!-- 3. Permanent Bottom Dock Bar -->
+      <div id="trading-session-status" class="trading-session-status" role="status" aria-live="polite" title="Typical weekday market hours in each session's local timezone; not broker connection status.">
+        <span class="trading-session-indicator" aria-hidden="true"></span>
+        <span id="trading-session-label">Checking trading sessions…</span>
+      </div>
+      <div id="bottom-bar">
+        <div class="bottom-bar-left">
+          <div class="bottom-bar-tabs">
+            <button id="mt5-feed-toggle" type="button" hidden></button>
+            <button id="quantower-feed-toggle" type="button" hidden></button>
+            <button id="ibkr-feed-toggle" type="button" hidden></button>
+            <button id="broker-toggle" type="button" hidden></button>
+            <button id="ctrader-feed-toggle" type="button" hidden></button>
+            <button id="saxo-feed-toggle" type="button" hidden></button>
+            <button id="watchlist-toggle" class="bottom-tab-btn" type="button" aria-controls="watchlist-panel" aria-expanded="false">Watchlist</button>
+            <button id="open-trades-toggle" class="bottom-tab-btn" type="button" aria-controls="paper-open-trades-modal" aria-expanded="false">Trades</button>
+            <button id="trade-history-toggle" class="bottom-tab-btn" type="button">Trade History</button>
+            <button id="activity-console-toggle" class="bottom-tab-btn" type="button">Console</button>
+            <button id="diagnostics-console-toggle" class="bottom-tab-btn" type="button" title="Open local diagnostic console" aria-label="Open diagnostic console">Debug Console</button>
+          </div>
+          <span id="bottom-loaded-bars" class="bottom-bar-stat" title="Chart history is loading.">Loaded Bars: loading…</span>
+        </div>
+        <div class="bottom-bar-right" style="display:flex; align-items:center; gap:12px; font-size:11px; color:var(--omega-muted);">
+          <span id="terminal-connection-status" data-state="disconnected">
+            <span id="terminal-connection-dot" aria-hidden="true"></span>
+            <span id="terminal-connection-label">No feed connected</span>
+          </span>
+          <span id="bottom-clock" style="font-family:Consolas, monospace; letter-spacing:0.5px;"></span>
+          <span id="connection-latency" class="connection-latency" title="Round-trip response time to the active broker or trading server" aria-live="polite">Server: — ms</span>
+        </div>
+      </div>
+
+      <section id="activity-console" aria-label="Platform activity console" hidden>
+        <header><strong>Platform console</strong><div><button id="activity-console-copy" class="btn" type="button" title="Copy all console messages">Copy all</button><button id="activity-console-clear" class="btn" type="button">Clear</button><button id="activity-console-close" class="btn" type="button" aria-label="Close console">×</button></div></header>
+        <div id="activity-console-list" role="log" aria-live="polite"></div>
+      </section>
+    </div>
+
+
+
+    <script type="module" src="./src/bootstrap.ts"></script>
+  </body>
+</html>
